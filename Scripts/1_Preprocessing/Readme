@@ -1,2 +1,2 @@
 Here are the settings for preprocessing/alignment. For the alignment, **cellranger 3.0.0, Ens93 and GRCh38** have been used. Experiments surpassing 300.000 reads 
-per nucleus have been downsampled to 100.000 reads/nucleus. 
+per nucleus have been downsampled to 100.000 reads/nucleus. Please check Sample_Table.txt for further information. 
