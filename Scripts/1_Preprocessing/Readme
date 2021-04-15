@@ -1,1 +1,1 @@
-Here are the settings for preprocessing/alignment:
+Here are the settings for preprocessing/alignment. For the alignment, cellranger 3.0.0 and Ens93 was used. Experiments surpassing 300.000 reads per nucleus have been downsampled to 100.000 reads/nucleus. 
