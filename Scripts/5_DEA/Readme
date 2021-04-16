@@ -1,6 +1,6 @@
 The results can be found in /Eval/edgeR_DEGs on the FTP. (e.g. ALLCELLTYPE_ALLGENOTYPES_EDGER.._V2.csv). 
 
-Recommended change by Jorge:
+Recommended change by Jorge for edgeR_DEgenes_allstates_STEP7.2.ipynb:
 #Old line
 GENOTYPES <- unique(meta.data$Genotype)[-6]
 #New line
