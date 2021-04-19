@@ -1,7 +1,4 @@
-The results can be found in /Eval/edgeR_DEGs on the FTP. (e.g. ALLCELLTYPE_ALLGENOTYPES_EDGER.._V2.csv). 
+The results can be found in /Eval/edgeR_DEGs on the FTP. (e.g. ALLCELLTYPE_ALLGENOTYPES_EDGER.._V3.csv). 
 
-Recommended change by Jorge for edgeR_DEgenes_allstates_STEP7.2.ipynb:
-#Old line
-GENOTYPES <- unique(meta.data$Genotype)[-6]
-#New line
-GENOTYPES <- unique(meta.data$Genotype[meta.data$Genotype != "control"])
+# Last update: V3, 19.04.2021
+
