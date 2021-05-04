@@ -1,0 +1,1776 @@
+---
+title: "Cell type proportions"
+author: "Matthias Heinig"
+date: "08.04.2021"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE)
+knitr::opts_knit$set(root.dir=normalizePath(".."))
+library(ggplot2)
+library(ggpubr)
+library(ggsignif)
+library(ggrepel)
+library(tidyverse)
+# library(dplyr)
+library(reshape)
+library(glmnet)
+
+## for compositional data analysis
+library(compositions)
+
+## nice HTML tables
+library(DT) # interactive
+library(kableExtra) # plain
+
+theme_set(theme_bw())
+flipx <- theme(axis.text.x=element_text(angle=90, hjust=1))
+```
+
+
+# Explore the cell type proportion data
+
+Load the data for all anatomical regions
+```{r}
+## we will use cell_type as coarse grained annotation and cell_states as more fine grained
+
+## meta <- read_csv("data/current/celltype_abundance/global_all_solo_ANNOTATED_CELLSTATES_META.csv")
+## meta <- read_csv("data/current/annotated_expression/global_all_ANNOTATED_wHCA_meta.csv")
+## this data set has leiden_annotated as the coarse grained annotation
+## meta <- mutate(meta, cell_type=leiden_annotated)
+## meta <- read_csv("data/current/celltype_abundance/global_all_ANNOTATED_META_wHCA_CELLSTATES_20201118.csv", col_types=cols(cell_type_global_HCA="c", Gender="c"))
+## this file has cell_types_fine and cell_states
+## meta <- dplyr::rename(meta, cell_type_coarse=cell_type) %>% mutate(cell_type=cell_type_fine)
+
+meta <- read_csv("data/current/celltype_abundance/global_all_ANNOTATED_CELLSTATES_OBS.csv", col_types=cols(cell_type_global_HCA="c", Gender="c"))  
+## remove cells from artifact states with failed QC
+meta <- filter(meta, validated)
+## 2 Proben sind raus: H42_RV_premrna, H15_LV_premrna
+## 2 neu dazu: Patient IC_H03 und IC_H04
+## there is currently a mixing of EC and SMC on the celltype level which we decided to resolve:
+## EC & vEC -> EC and PC & SMC -> Mural
+meta$cell_type[meta$cell_type %in% c("nonvEC", "vEC")] <- "EC"
+meta$cell_type[meta$cell_type %in% c("PC", "SMC")] <- "Mural"
+## also remove the unclassified cell state cells
+meta <- filter(meta, !cell_states %in% c("unclassfied.1", "unclassfied.2"))
+
+meta %>% group_by(cell_type) %>% summarise(n())
+```
+
+## Assess the correlation of abundances between replicates
+
+```{r}
+patients.with.replicates <- filter(meta, Replicate == "Replicate") %>% group_by(Patient, Region) %>% summarise(n())
+patients.with.replicates %>% kbl() %>% kable_styling()
+```
+
+select those patients and regions and compute the proportions per sample
+```{r, message=FALSE}
+meta.with.replicates <- select(patients.with.replicates, Patient, Region) %>% inner_join(meta)
+sample2patient <- select(meta.with.replicates, Patient, Sample) %>% distinct()
+
+total.per.sample <-  meta.with.replicates  %>% group_by(Sample, Region) %>% summarise(total=n())
+prop.coarse <- meta.with.replicates  %>% group_by(cell_type, Sample, Region) %>% summarise(count=n())
+prop.coarse <- merge(prop.coarse, total.per.sample, all.x=TRUE)
+prop.coarse$proportion <- prop.coarse$count / prop.coarse$total
+prop.coarse <- merge(prop.coarse, sample2patient)
+
+prop <- meta.with.replicates  %>% group_by(cell_states, Sample, Region) %>% summarise(count=n())
+prop <- merge(prop, total.per.sample, all.x=TRUE)
+prop$proportion <- prop$count / prop$total
+prop <- merge(prop, sample2patient)
+```
+
+For each replicate pair compute the correlations of proportions
+
+```{r, message=FALSE}
+pairwise.cor <- NULL
+all.pairs <- NULL
+for (i in 1:nrow(patients.with.replicates)) {
+  prop.patient <- select(patients.with.replicates[i,], Patient, Region) %>% inner_join(prop.coarse) 
+  samples <- unique(prop.patient$Sample)
+  sample1 <- samples[1]
+  for (sample2 in samples[-1]) {
+    selected <- c(sample1, sample2)
+    id_cols <- c("cell_type", "Patient", "Region")
+    pair <- prop.patient %>% filter(Sample %in% selected) %>% pivot_wider(id_cols=id_cols, names_from = "Sample", values_from = "proportion")
+    pairwise.cor <- rbind(pairwise.cor, data.frame(pair[1,c("Patient", "Region")], replicate1=sample1, replicate2=sample2, cor=cor(x=pair[[sample1]], y=pair[[sample2]])))
+    colnames(pair)[length(id_cols) + 1:2] <- c("replicate1", "replicate2")
+    all.pairs <- rbind(all.pairs, pair)
+  }
+}
+pairwise.cor$R2 <- pairwise.cor$cor^2
+pairwise.cor %>% kbl() %>% kable_styling()
+```
+
+Summarise the correlations
+```{r}
+summary(pairwise.cor$cor)
+summary(pairwise.cor$R2)
+```
+
+
+Scatter plot this
+```{r}
+lims <- range(prop.coarse$proportion)
+g <- ggplot(data=all.pairs) + geom_point(aes(x=replicate1, y=replicate2, col=Patient, shape=Region)) + geom_abline(slope=1, intercept=0, col="grey") + scale_x_log10(limits=lims) + scale_y_log10(limits=lims)
+print(g)
+```
+
+## Overview of the non replicate samples
+
+Remove samples that are replicates
+```{r}
+meta <- filter(meta, Replicate != "Replicate")
+```
+
+
+Summary of cell types and states
+```{r}
+length(unique(meta$cell_type))
+length(unique(meta$cell_states))
+```
+
+
+```{r}
+total.per.patient <-  meta %>% group_by(Patient, Region) %>% summarise(total=n())
+prop.coarse <- meta %>% group_by(cell_type, Patient, Region) %>% summarise(count=n())
+prop.coarse <- merge(prop.coarse, total.per.patient, all.x=TRUE)
+prop.coarse$proportion <- prop.coarse$count / prop.coarse$total
+
+prop <- meta %>% group_by(cell_states, Patient, Region) %>% summarise(count=n())
+prop <- merge(prop, total.per.patient, all.x=TRUE)
+prop$proportion <- prop$count / prop$total  ## add a small pseudo count to make sure we have positive numbers
+```
+
+
+Extract the patient level meta data
+```{r}
+cov.names <- c("Patient", "Gender", "Gene", "Origin", "Age")
+covariates <- unique(meta[,cov.names])
+plot.data <- merge(prop, covariates, by="Patient")
+```
+
+
+```{r}
+## Helper functions to work with the data
+get.proportion.matrix <- function(prop.coarse, region, celltype_col, pseudocount=0.01, value_col="proportion") {
+  frm <- as.formula(paste("Patient", celltype_col, sep="~"))
+  ct <- cast(prop.coarse[prop.coarse$Region == region,], frm, value=value_col, fun.aggregate=mean)
+  ct[is.na(ct)] <- 0
+  rownames(ct) <- ct$Patient
+  dn <- list(rownames(ct), colnames(ct)[-1])
+  ct <- as.matrix(ct[,-1]) 
+  dimnames(ct) <- dn
+  ct <- ct + pseudocount ## add pseudo count
+  return(ct)
+}
+```
+
+<!-- TO BE REMOVED!
+Maybe for a better visualization we first plot the number of samples and cells per genotype and region
+
+```{r, fig.width=6, fig.height=4, eval=FALSE}
+ncells.cell.states <- plot.data %>% group_by(cell_states, Region, Gene) %>% summarise(ncells=sum(count), meanprop=mean(proportion), nsamples=n())
+ggplot(data=ncells.cell.states) + geom_tile(aes(x=cell_states, y=Gene, fill=nsamples), stat="identity") + flipx + facet_grid(Region~.)
+```
+-->
+
+
+
+
+
+# Differences between regions
+
+## Merge regions: FW and AP into LV?
+The AP samples are missing in many patients. Since AP and FW are both parts of 
+the left ventricle, we consider merging these two regions into LV, to increase
+the number of cells.
+
+To assess whether these regions are homogeneous in terms of cell type composition, 
+we do the following:
+
+- select patients that have FW and AP samples
+- check for differential abundance (DA) between the regions
+
+```{r}
+da.between.regions <- function(region1, region2, patients) {
+  Z <- NULL
+  reg <- NULL
+  for (region in c(region1, region2)) {
+    ct <- cast(filter(plot.data, Region == region  & Patient %in% patients), Patient ~ cell_states_factor, value="proportion", fun.aggregate=mean, add.missing=TRUE)
+    ct[is.na(ct)] <- 0
+    rownames(ct) <- ct$Patient
+    dn <- list(rownames(ct), colnames(ct)[-1])
+    ct <- as.matrix(ct[,-1]) + 0.01 ## add pseudo count
+    dimnames(ct) <- dn
+    Zr <- clr(acomp(ct))
+    Z <- rbind(Z, Zr)
+    reg <- c(reg, rep(region, nrow(Zr)))
+  }
+  
+  da.regions <- NULL
+  for (celltype in colnames(ct)) {
+    data <- data.frame(abundance=Z[,celltype], Region=reg)
+    m <- lm(abundance ~ Region, data=data)
+    da.regions <- rbind(da.regions, data.frame(celltype, t(coef(summary(m))[2,]), check.names=FALSE))
+  }
+  da.regions <- dplyr::rename(da.regions, stderr=`Std. Error`, p=`Pr(>|t|)`)
+  da.regions <- data.frame(da.regions, FDR=p.adjust(da.regions$p, "BH"))
+  return(da.regions)
+}
+```
+
+DA between FW and AP
+
+```{r}
+plot.data$cell_states_factor <- factor(plot.data$cell_states) 
+
+patients.regions <- unique(select(plot.data, Patient, Region))
+patients <- (patients.regions  %>% filter(Region %in% c("AP", "FW")) %>% group_by(Patient) %>% summarise(n=n()) %>% filter(n == 2) %>% select(Patient))[[1]]
+
+da.regions.ap.fw <- da.between.regions("AP", "FW", patients)
+
+with(da.regions.ap.fw, hist(p, breaks=30))
+```
+Number of DA cell states
+```{r}
+table(da.regions.ap.fw$FDR < 0.1)
+```
+
+Full DA results table
+```{r}
+da.regions.ap.fw %>% 
+  # filter(FDR < 0.1) %>% 
+  arrange(p) %>% datatable()
+```
+
+
+Genotypes of the selected patients
+```{r}
+filter(covariates, Patient %in% patients) %>% kbl() %>% kable_styling()
+```
+
+From this analysis (no significant differences in abundance) we conclude that we can merge FW and AP. For now we create a new region, which we call LV and add it to the data (duplicating the FW and AP cells)
+
+```{r, message=FALSE}
+lv.meta <- filter(meta, Region %in% c("FW", "AP"))
+lv.meta$Region = "LV"
+
+meta <- rbind(meta, lv.meta)
+
+total.per.patient <-  meta %>% group_by(Patient, Region) %>% summarise(total=n())
+prop.coarse <- meta %>% group_by(cell_type, Patient, Region) %>% summarise(count=n())
+prop.coarse <- merge(prop.coarse, total.per.patient, all.x=TRUE)
+prop.coarse$proportion <- prop.coarse$count / prop.coarse$total
+
+prop <- meta %>% group_by(cell_states, Patient, Region) %>% summarise(count=n())
+prop <- merge(prop, total.per.patient, all.x=TRUE)
+prop$proportion <- prop$count / prop$total  ## add a small pseudo count to make sure we have positive numbers
+
+plot.data <- merge(prop, covariates, by="Patient")
+```
+
+
+## DA between RV and LV
+
+In our HCA analysis we have found regional differences between LV and RV. So as 
+a positive control we do the DA analysis between left and right ventricle.
+
+```{r}
+plot.data$cell_states_factor <- factor(plot.data$cell_states) 
+
+patients.regions <- unique(select(plot.data, Patient, Region))
+patients <- (patients.regions  %>% filter(Region %in% c("RV", "LV")) %>% group_by(Patient) %>% summarise(n=n()) %>% filter(n == 2) %>% select(Patient))[[1]]
+
+da.regions.rv.lv <- da.between.regions("RV", "LV", patients)
+
+with(da.regions.rv.lv, hist(p, breaks=30))
+```
+
+Number of significant DA cell states
+```{r}
+table(da.regions.rv.lv$FDR < 0.1)
+```
+
+Full results table of the DA analysis
+```{r}
+da.regions.rv.lv %>%
+  # filter(FDR < 0.1) %>% 
+  arrange(p) %>% datatable()
+```
+
+
+## DA between SP and FW
+
+```{r}
+plot.data$cell_states_factor <- factor(plot.data$cell_states) 
+
+patients.regions <- unique(select(plot.data, Patient, Region))
+patients <- (patients.regions  %>% filter(Region %in% c("S", "FW")) %>% group_by(Patient) %>% summarise(n=n()) %>% filter(n == 2) %>% select(Patient))[[1]]
+
+da.regions.sp.fw <- da.between.regions("S", "FW", patients)
+
+with(da.regions.sp.fw, hist(p, breaks=30))
+```
+
+Number of significant DA cell states
+```{r}
+table(da.regions.sp.fw$FDR < 0.1)
+```
+
+Full results table of the DA analysis
+```{r}
+da.regions.sp.fw %>% 
+  # filter(FDR < 0.1) %>% 
+  arrange(p) %>% datatable()
+```
+
+
+## DA between SP and LV
+
+```{r}
+plot.data$cell_states_factor <- factor(plot.data$cell_states) 
+
+patients.regions <- unique(select(plot.data, Patient, Region))
+patients <- (patients.regions  %>% filter(Region %in% c("S", "LV")) %>% group_by(Patient) %>% summarise(n=n()) %>% filter(n == 2) %>% select(Patient))[[1]]
+
+da.regions.sp.lv <- da.between.regions("S", "LV", patients)
+
+with(da.regions.sp.lv, hist(p, breaks=30))
+```
+
+
+```{r}
+table(da.regions.sp.lv$FDR < 0.1)
+```
+
+Full results table of the DA analysis
+```{r}
+da.regions.sp.lv %>% 
+  # filter(FDR < 0.1) %>% 
+  arrange(p) %>% datatable()
+```
+
+
+From this analysis we conclude that it is save to merge LV and Septum as well
+
+```{r}
+lv.meta <- filter(meta, Region %in% c("S"))
+lv.meta$Region = "LV"
+
+meta <- rbind(meta, lv.meta)
+
+total.per.patient <-  meta %>% group_by(Patient, Region) %>% summarise(total=n())
+prop.coarse <- meta %>% group_by(cell_type, Patient, Region) %>% summarise(count=n())
+prop.coarse <- merge(prop.coarse, total.per.patient, all.x=TRUE)
+prop.coarse$proportion <- prop.coarse$count / prop.coarse$total
+
+prop <- meta %>% group_by(cell_states, Patient, Region) %>% summarise(count=n())
+prop <- merge(prop, total.per.patient, all.x=TRUE)
+prop$proportion <- prop$count / prop$total  ## add a small pseudo count to make sure we have positive numbers
+
+plot.data <- merge(prop, covariates, by="Patient")
+```
+
+
+# Analysis by genotype
+
+Filter for genotypes that are more common (n > 3)
+```{r}
+patients.per.gt <- covariates %>% group_by(Gene) %>% summarise(n=n())
+selected.genes <- patients.per.gt$Gene[patients.per.gt$n > 3]
+selected.patients <- covariates$Patient[covariates$Gene %in% selected.genes]
+prop <- prop[prop$Patient %in% selected.patients,]
+covariates <- covariates[covariates$Patient %in% selected.patients,]
+plot.data <- plot.data[plot.data$Patient %in% selected.patients,]
+```
+
+Split into the cell type proportions and patient covariates.
+```{r}
+cell_states <- unique(prop$cell_states)
+```
+
+Barplots of the proportions by genotype
+```{r}
+hist(log10(plot.data$proportion), breaks=50)
+```
+
+This histogram looks like most combinations do not really occur? Check for each cell state in how many samples they can be seen.
+```{r}
+nobs.cell.states <- plot.data %>% group_by(cell_states, Region, .drop=FALSE) %>% summarise(nobs=sum(proportion > 0.01), ngroup=n())
+ggplot(data=nobs.cell.states) + geom_bar(aes(x=cell_states, y=ngroup), stat="identity") + flipx + facet_grid(Region~.)
+```
+
+
+
+
+We have around 5000 cells per run.
+
+TODO: Mast cells (~1%) should be included in the analysis! Bcells and other immune cells might be removed.
+
+
+Only plot the most frequent cell states. We select only cell states that are observed in at least five samples in Apex (AP) or free wall (FW).
+```{r}
+selected.cellstates <- (plot.data %>% filter(Region %in% c("AP", "FW")) %>% group_by(cell_states, .drop=FALSE) %>% summarise(nobs=sum(proportion > 0.01), ngroup=n(), mean=mean(proportion)) %>% filter(mean > 0.01) %>% select(cell_states))[[1]]
+
+ggplot(data=plot.data[plot.data$cell_states %in% selected.cellstates,]) + geom_boxplot(aes(x=cell_states, y=log10(proportion), fill=Gene)) + flipx + facet_grid(Region ~.)
+```
+
+For comparision we plot the coarse grained annotation
+```{r}
+plot.data.coarse <- merge(prop.coarse, covariates, by="Patient")
+prop.coarse <- filter(prop.coarse, Patient %in% selected.patients)
+
+
+ggplot(data=plot.data.coarse) + geom_boxplot(aes(x=cell_type, y=proportion, fill=Gene)) + flipx + facet_grid(Region ~.)
+```
+
+
+
+There are large differences in cardiomyocyte (CM) count and fibroblast (FB) counts. Also MP cells and T NK show some variation. Let us look at the relation between fibroblasts and cardiomyocytes in more detail.
+
+Look at the data as proportions where the absolute numbers are not meaningful. The function acompmargin is adding a reference column that corresponds to the geometric mean of proportions of the remain cell types. This can then be used as the reference in the absolute log ratio (alr) transformation. This is quite similar to using the centered log ratio method (clr). The difference would be that the two cell types of interest (CM and FB) also go into the refence (geometric mean). Now we use the acompmargin in combination with the alr transformation.
+
+
+Analysis plan
+
+* PCA colored by genotype per region
+* differential cell type abundance per region per genotype (vs control)
+* prediction of genotype based on abundance values one genotype (LMNA, TTN) vs the rest
+
+## PCA of the compositions
+
+```{r}
+region <- "FW"
+
+ct <- cast(prop[prop$Region == region & prop$cell_states %in% selected.cellstates,], Patient ~ cell_states, value="proportion", fun.aggregate=mean)
+ct[is.na(ct)] <- 0
+rownames(ct) <- ct$Patient
+dn <- list(rownames(ct), colnames(ct)[-1])
+ct <- as.matrix(ct[,-1]) + 0.01 ## add pseudo count
+dimnames(ct) <- dn
+
+covar.fw <- covariates[match(rownames(ct), covariates$Patient),]
+
+comp <- acomp(ct)
+pca <- princomp(clr(ct))
+# pca <- princomp(comp)
+summary(pca)
+```
+
+Look at the projection
+```{r}
+pcs <- predict(pca, newdata=clr(ct))
+# predict(pca, newdata=comp)
+ggplot(data=cbind(pcs, covar.fw)) + geom_point(aes(x=Comp.1, y=Comp.2, col=Gene))
+```
+
+```{r}
+ggplot(data=cbind(pcs, covar.fw)) + geom_point(aes(x=Comp.2, y=Comp.3, col=Gene))
+```
+
+Plot the first PC by genotype
+```{r, fig.width=1, fig.height=2}
+ggplot(data=cbind(pcs, covar.fw)) + geom_boxplot(aes(x=Gene, y=Comp.1)) + flipx
+```
+
+```{r}
+ggplot(data=data.frame(celltype=rownames(pca$loadings), Comp.1=pca$loadings[,1])) + geom_bar(aes(x=celltype, y=Comp.1), stat="identity") + flipx
+```
+
+
+
+## Cell state differential abundance between genotypes
+Here we will look at all cell types, so we will use the crl transformation.
+We look separately for each region: genotype vs the control.
+
+```{r, warning=FALSE, message=FALSE}
+da.vs.ctrl <- NULL
+
+for (region in unique(prop$Region)) {
+
+  ct <- cast(prop[prop$Region == region & prop$cell_states %in% selected.cellstates,], Patient ~ cell_states, value="proportion", fun.aggregate=mean)
+  ct[is.na(ct)] <- 0
+  rownames(ct) <- ct$Patient
+  dn <- list(rownames(ct), colnames(ct)[-1])
+  ct <- as.matrix(ct[,-1]) 
+  dimnames(ct) <- dn
+  all.zero <- rowSums(ct) == 0
+  ct <- ct + 0.01 ## add pseudo count
+  
+  covar <- covariates[match(rownames(ct), covariates$Patient),]
+
+  Z <- clr(acomp(ct))
+  
+  for (celltype in colnames(ct)) {
+    for (gene in setdiff(unique(covar$Gene), "control")) {
+      lvls <- c("control", gene)
+      data <- data.frame(abundance=Z[,celltype], covar)[covar$Gene %in% lvls & !all.zero,]
+      data$Gene <- factor(data$Gene, levels=lvls)
+      m <- lm(abundance ~ Gene, data=data)
+      da.vs.ctrl <- rbind(da.vs.ctrl, data.frame(celltype, gene, region, t(coef(summary(m))[2,]), check.names=FALSE))
+    }
+  }
+}
+da.vs.ctrl <- data.frame(da.vs.ctrl, FDR=p.adjust(da.vs.ctrl$`Pr(>|t|)`, "BH"))
+```
+
+Just look at significant differences
+```{r}
+da.vs.ctrl %>% arrange(FDR) %>% datatable()
+```
+
+Visualize these results as heatmaps
+```{r}
+ggplot(data=da.vs.ctrl) + geom_tile(aes(x=celltype, y=gene, fill=t.value)) + geom_point(aes(x=celltype, y=gene,color=FDR < 0.05), data=da.vs.ctrl[da.vs.ctrl$FDR < 0.05,]) + scale_fill_gradient2() + flipx + facet_grid(region~.)
+```
+
+
+Repeat the same analysis for the rare cell types
+```{r, warning=FALSE, message=FALSE}
+da.vs.ctrl.rare <- NULL
+clr.df <- NULL
+
+for (region in unique(prop$Region)) {
+  # prop.subset <- prop[prop$Region == region & !prop$cell_states %in% selected.cellstates,]
+  prop.subset <- prop[prop$Region == region,]
+  prop.subset$cell_states <- factor(prop.subset$cell_states, levels=unique(prop$cell_states))
+  ct <- cast(prop.subset, Patient ~ cell_states, value="proportion", fun.aggregate=mean, add.missing = TRUE)
+  ct[is.na(ct)] <- 0
+  rownames(ct) <- ct$Patient
+  dn <- list(rownames(ct), colnames(ct)[-1])
+  ct <- as.matrix(ct[,-1]) + 0.01 ## add pseudo count
+  dimnames(ct) <- dn
+
+  covar <- covariates[match(rownames(ct), covariates$Patient),]
+  prop.subset <- merge(prop.subset, covar, by="Patient")
+
+  Z <- clr(acomp(ct))
+  clr.df <- rbind(clr.df, data.frame(Region=region, Patient=rownames(Z), Z))
+  
+  for (celltype in colnames(ct)) {
+    for (gene in setdiff(unique(covar$Gene), "control")) {
+      lvls <- c("control", gene)
+      data <- data.frame(abundance=Z[,celltype], covar)[covar$Gene %in% lvls,]
+      data$Gene <- factor(data$Gene, levels=lvls)
+      m <- lm(abundance ~ Gene, data=data)
+      
+      smr <- prop.subset %>% filter(Gene %in% c("control", gene) & cell_states == celltype) %>% group_by(Gene) %>% summarise(mean.prop=mean(proportion), mean.count=mean(count), nind=sum(count > 0))
+      
+      da.vs.ctrl.rare <- rbind(da.vs.ctrl.rare, data.frame(celltype, gene, region, mean.prop.gene=as.numeric(smr[smr$Gene==gene,"mean.prop"]), mean.prop.ctrl=as.numeric(smr[smr$Gene=="control","mean.prop"]), mean.count.gene=as.numeric(smr[smr$Gene==gene,"mean.count"]), mean.count.ctrl=as.numeric(smr[smr$Gene=="control","mean.count"]), nind.gene=as.numeric(smr[smr$Gene==gene,"nind"]), nind.ctrl=as.numeric(smr[smr$Gene=="control","nind"]), t(coef(summary(m))[2,]), check.names=FALSE))
+    }
+  }
+}
+da.vs.ctrl.rare <- data.frame(da.vs.ctrl.rare, FDR=p.adjust(da.vs.ctrl.rare$`Pr(>|t|)`, "BH"))
+
+write_tsv(clr.df, "results/current/cellstates_CLR.txt")
+write_tsv(da.vs.ctrl.rare, "results/current/cellstates_DA_gt_vs_ctrl.txt")
+
+```
+
+Check the mean counts of the significant cell types
+```{r}
+selected.rare <- da.vs.ctrl.rare[da.vs.ctrl.rare$FDR < 0.05,]
+```
+
+Filter for cells that were observed in at least three individuals
+```{r}
+selected.rare <- selected.rare[selected.rare$nind.ctrl >= 3 | selected.rare$nind.gene >= 3,]
+```
+
+
+```{r, fig.width=8, fig.height=4}
+ggplot(data=na.omit(da.vs.ctrl.rare)) + geom_tile(aes(x=celltype, y=gene, fill=t.value)) + geom_point(aes(x=celltype, y=gene,color=FDR < 0.05), data=na.omit(selected.rare)) + scale_fill_gradient2() + flipx + facet_grid(region~.)
+```
+
+### Summarize these results
+
+We focus on the more frequent cell types (avg > 1%).
+
+Really interesting cell types would be those that specifically change in just a single genotype.
+
+```{r}
+da.in.all.regions <- da.vs.ctrl.rare %>% filter(region %in% c("LV", "RV")) %>% 
+  select(celltype, region, gene, FDR) %>% pivot_wider(names_from="region", values_from="FDR") %>% 
+  mutate(da.all.regions=LV < 0.05 & RV < 0.05)
+```
+
+First we look just for cell types that change in all regions
+
+```{r}
+interesting.cts <-  da.in.all.regions %>% 
+  group_by(celltype) %>% summarise(nr.da.gt=sum(da.all.regions)) %>% 
+  filter(nr.da.gt == 1)
+interesting.cts <- interesting.cts[[1]]
+
+filter(da.in.all.regions, celltype %in% interesting.cts & da.all.regions == TRUE) %>% kbl() %>% kable_styling()
+```
+
+Next look for cell types that change only in one region and one genotype (make sure to remove doublet clusters!!)
+
+```{r}
+selected <- da.vs.ctrl.rare %>% filter(region %in% c("LV", "RV")) %>% 
+  select(celltype, region, gene, FDR)
+interesting.cts <- selected %>% group_by(celltype) %>% 
+  summarise(nr.da.gt=sum(FDR < 0.05)) %>% filter(nr.da.gt == 1)
+interesting.cts <- interesting.cts[[1]]
+
+selected <- filter(selected, celltype %in% interesting.cts & FDR < 0.05) %>% arrange(celltype, FDR)
+selected %>% kbl() %>% kable_styling()
+```
+
+```{r}
+filter(da.vs.ctrl.rare, celltype == "AD1.2") %>% arrange(FDR) %>% kbl() %>% kable_styling()
+```
+
+
+Summarize further
+```{r}
+selected %>% group_by(gene) %>% summarise(n()) %>% kbl() %>% kable_styling()
+```
+
+Create plots for those
+```{r}
+for (i in 1:nrow(selected)) {
+  pdata <- inner_join(plot.data, selected[i,], by=c(Region="region", cell_states="celltype"))
+  lvls <- c("control", sort(setdiff(pdata$Gene, "control")))
+  pdata$Gene <- factor(pdata$Gene, levels=lvls)
+  #p <- ggplot(aes(x=Gene, y=proportion, fill=Gene), data=pdata) + geom_boxplot()
+  p <- ggboxplot(pdata, x="Gene", y="proportion", fill="Gene")  + flipx + stat_pvalue_manual(data=data.frame(group1="control", group2=as.character(pdata$gene[[1]]), p.adj=round(pdata$FDR[[1]], 3), stringsAsFactors=FALSE), label="p.adj", y.position=max(pdata$proportion), map_signif_level=TRUE, )  + theme(legend.position="right") + labs(title=with(selected[i,], paste(celltype, region)))
+  print(p)
+}
+```
+
+
+### Focus on common cell states
+```{r}
+indicator <- da.vs.ctrl %>% filter(region %in% c("LV", "RV")) %>% pivot_wider(id_cols=c("celltype", "gene", "region"), names_from="gene", values_from="FDR")
+cols <- 3:ncol(indicator)
+indicator[,cols] <- indicator[,cols] < 0.05
+indicator <- as.data.frame(indicator)
+rownames(indicator) <- paste("row", 1:nrow(indicator), sep="")
+library(pheatmap)
+mat <- as.matrix(indicator[,cols])
+for (i in 1:ncol(mat)) {
+  mat[,i] <- as.numeric(mat[,i])  
+}
+pheatmap(mat, annotation_row=indicator[,1:2], show_rownames=F)
+```
+
+Similar analysis but summarize over regions. Indicator set to tru if any region.
+
+```{r}
+selected <- da.vs.ctrl %>% filter(region %in% c("LV", "RV", "S")) %>% group_by(gene, celltype) %>% summarise(assoc=any(FDR < 0.05)) 
+indicator <- selected %>% pivot_wider(id_cols=c("celltype", "gene"), names_from="gene", values_from="assoc")
+cols <- 2:ncol(indicator)
+indicator <- as.data.frame(indicator)
+rownames(indicator) <- indicator$celltype
+library(pheatmap)
+mat <- as.matrix(indicator[,cols])
+for (i in 1:ncol(mat)) {
+  mat[,i] <- as.numeric(mat[,i])  
+}
+pheatmap(t(mat), legend=F)
+```
+
+Select only the cell types that show up in exactly one genotype
+```{r}
+ct <- (selected %>% group_by(celltype) %>% summarise(ngt=sum(assoc == TRUE)) %>% filter(ngt == 1) )$celltype
+selected <- filter(selected, assoc == TRUE & celltype == ct) %>% inner_join(unique(select(da.vs.ctrl, region, celltype, gene, FDR)))
+filter(da.vs.ctrl, celltype == ct & FDR <0.05) %>% kbl() %>% kable_styling()
+```
+
+
+Plot specific examples
+
+```{r}
+for (i in 1:nrow(selected)) {
+  pdata <- inner_join(plot.data, selected[i,], by=c(Region="region", cell_states="celltype"))
+  lvls <- c("control", sort(setdiff(pdata$Gene, "control")))
+  pdata$Gene <- factor(pdata$Gene, levels=lvls)
+  #p <- ggplot(aes(x=Gene, y=proportion, fill=Gene), data=pdata) + geom_boxplot()
+  p <- ggboxplot(pdata, x="Gene", y="proportion", fill="Gene")  + flipx + stat_pvalue_manual(data=data.frame(group1="control", group2=as.character(pdata$gene[[1]]), p.adj=round(pdata$FDR[[1]], 3), stringsAsFactors=FALSE), label="p.adj", y.position=max(pdata$proportion), map_signif_level=TRUE, )  + theme(legend.position="right") + labs(title=with(selected[i,], paste(celltype, region)))
+  print(p)
+}
+```
+
+### Correlation of effect sizes
+
+To make a global statement, we can look at the correlations of effect sizes across regions, genotypes and cell types
+
+#### Correlation between genotypes across cell types
+
+```{r}
+tscores <- filter(da.vs.ctrl.rare, gene %in% selected.rare$gene) %>% select(gene, region, celltype, t.value) %>% spread(key=celltype, value=t.value) %>% unite(id, gene, region)
+rownames(tscores) <- tscores$id
+tscores <- t(as.matrix(tscores[,-1]))
+cmat <- cor(tscores, use="pairwise.complete")
+cmat <- as.data.frame(cmat) %>% rownames_to_column(var="id1") 
+cmat <- gather(cmat, key="id2", value="cor", -id1) %>% separate(id1, into=c("gene1", "region1"), sep="_", remove=F)  %>% separate(id2, into=c("gene2", "region2"), sep="_", remove=F)
+## turn around the labels so that the diagonal structure can be seen better
+cmat$gene1 <- factor(cmat$gene1, levels=rev(sort(unique(cmat$gene1))))
+cmat$gene2 <- factor(cmat$gene2, levels=rev(sort(unique(cmat$gene2))))
+## group the different LV regions together
+region.lvls <- c("AP", "S", "FW", "LV", "RV")
+cmat$region1 <- factor(cmat$region1, levels=region.lvls)
+cmat$region2 <- factor(cmat$region2, levels=rev(region.lvls))
+
+ggplot(data=cmat) + geom_tile(aes(x=gene1, y=gene2, fill=cor)) + scale_fill_gradient(limits=c(0, 1)) + facet_grid(region1 ~ region2) + flipx
+```
+
+Same plot only for LV and RV
+```{r}
+p <- ggplot(data=filter(cmat, region1 %in% c("LV", "RV") & region2 %in% c("LV", "RV") )) + geom_tile(aes(x=gene1, y=gene2, fill=cor)) + scale_fill_gradient(limits=c(0, 1)) + facet_grid(region1 ~ region2) + flipx
+print(p)
+```
+
+Save as png and pdf
+```{r}
+png(file="results/current/celltypes_DA_gt_vs_ctrl_cor_of_eff.png", width=750, height=550, res=100)
+print(p)
+dev.off()
+
+pdf(file="results/current/celltypes_DA_gt_vs_ctrl_cor_of_eff.pdf", width=7.5, height=5.5)
+print(p)
+dev.off()
+```
+
+
+To illustrate where the data comes we create a scatter plots of the t scores
+
+```{r, fig.width=5, fig.height=5}
+x <- as.data.frame(tscores) %>% rownames_to_column(var="cellstate")
+topx <- unique(rbind(x %>% slice_max(abs(RBM20_LV), n=10), x %>% slice_max(abs(TTN_LV), n=10)))
+ggplot(aes(x=TTN_LV, y=RBM20_LV), data=x) + geom_point() + geom_label_repel(aes(label=cellstate), data=topx) + labs(x="t score TTN vs control", y="t score RBM20 vs control")
+```
+
+
+
+#### Correlation between cell types across genotypes
+
+```{r, fig.width=5.5, fig.height=4.5}
+tscores <- filter(da.vs.ctrl, gene %in% selected.rare$gene) %>% select(gene, region, celltype, t.value) %>% spread(key=gene, value=t.value) %>% unite(id, celltype, region, sep="|")
+rownames(tscores) <- tscores$id
+tscores <- t(as.matrix(tscores[,-1]))
+
+cmat <- cor(tscores, use="pairwise.complete")
+cmat <- as.data.frame(cmat) %>% rownames_to_column(var="id1")
+cmat <- gather(cmat, key="id2", value="cor", -id1) %>% separate(id1, into=c("celltype1", "region1"), sep="\\|", remove=F)  %>% separate(id2, into=c("celltype2", "region2"), sep="\\|", remove=F)
+
+cs2ct <- unique(select(meta, cell_type, cell_states))
+cmat <- inner_join(cmat, cs2ct, by=c("celltype1"="cell_states")) %>% dplyr::rename(cell_type_coarse1=cell_type)
+cmat <- inner_join(cmat, cs2ct, by=c("celltype2"="cell_states")) %>% dplyr::rename(cell_type_coarse2=cell_type)
+## reverse lables to better visualize the diagnonal structure
+rev.levels <- function(x) factor(x, levels=rev(sort(unique(x))))
+cmat$celltype1 <- rev.levels(cmat$celltype1)
+cmat$celltype2 <- rev.levels(cmat$celltype2)
+cmat$cell_type_coarse1 <- rev.levels(cmat$cell_type_coarse1)
+
+ggplot(data=filter(cmat, region1 == "LV" & region2 == "LV")) + geom_tile(aes(x=celltype1, y=celltype2, fill=cor)) + scale_fill_gradient2(limits=c(-1, 1))  + facet_grid(cell_type_coarse2 ~ cell_type_coarse1, scales="free", space="free", drop=TRUE) + flipx
+```
+
+Plot the tscores in LV for comparison
+
+```{r, fig.width=5.5, fig.height=2}
+ggplot(data=filter(da.vs.ctrl, region == "LV")) + geom_tile(aes(x=celltype, y=gene, fill=t.value)) + geom_point(aes(x=celltype, y=gene,color=FDR < 0.05), data=da.vs.ctrl[da.vs.ctrl$FDR < 0.05,]) + scale_fill_gradient2() + flipx
+```
+
+#### Example EC1.0 and vCM1.3 in LV
+
+Plot the correlation of t scores as a scatter plot
+```{r}
+region <- "LV"
+celltypes <- c("EC1.0", "vCM1.3")
+pdata <- filter(da.vs.ctrl, region == !!region & celltype %in% celltypes) %>% pivot_wider(id_cols="gene", names_from="celltype", values_from="t.value")
+ggplot(aes_string(x=celltypes[1], y=celltypes[2]), data=pdata) + geom_point()
+```
+
+Look at the abundances
+
+```{r}
+prop.subset <- prop[prop$Region == region,]
+ct <- cast(prop.subset, Patient ~ cell_states, value="proportion", fun.aggregate=mean)
+ct[is.na(ct)] <- 0
+rownames(ct) <- ct$Patient
+dn <- list(rownames(ct), colnames(ct)[-1])
+ct <- as.matrix(ct[,-1]) + 0.01 ## add pseudo count
+dimnames(ct) <- dn
+covar <- covariates[match(rownames(ct), covariates$Patient),]
+prop.subset <- merge(prop.subset, covar, by="Patient")
+Z <- clr(acomp(ct))
+data <- data.frame(Z[,celltypes], covar) %>% pivot_longer(cols=celltypes, names_to="celltype", values_to="abundance")
+print(ggplot(data=data) + geom_boxplot(aes(x=celltype, y=abundance, col=Gene)))
+```
+
+
+#### Example PC3 and vCM2 in LV
+
+Plot the correlation of t scores as a scatter plot
+```{r}
+region <- "LV"
+celltypes <- c("PC3", "vCM2")
+pdata <- filter(da.vs.ctrl, region == !!region & celltype %in% celltypes) %>% pivot_wider(id_cols="gene", names_from="celltype", values_from="t.value")
+ggplot(aes(x=vCM2, y=PC3), data=pdata) + geom_point()
+```
+
+Look at the abundances
+
+```{r}
+prop.subset <- prop[prop$Region == region,]
+ct <- cast(prop.subset, Patient ~ cell_states, value="proportion", fun.aggregate=mean)
+ct[is.na(ct)] <- 0
+rownames(ct) <- ct$Patient
+dn <- list(rownames(ct), colnames(ct)[-1])
+ct <- as.matrix(ct[,-1]) + 0.01 ## add pseudo count
+dimnames(ct) <- dn
+covar <- covariates[match(rownames(ct), covariates$Patient),]
+prop.subset <- merge(prop.subset, covar, by="Patient")
+Z <- clr(acomp(ct))
+data <- data.frame(Z[,celltypes], covar) %>% pivot_longer(cols=celltypes, names_to="celltype", values_to="abundance")
+print(ggplot(data=data) + geom_boxplot(aes(x=celltype, y=abundance, col=Gene)))
+```
+
+
+#### Example MY1 and vCM2 in LV
+
+Plot the correlation of t scores as a scatter plot
+```{r}
+region <- "LV"
+celltypes <- c("MY1", "vCM2")
+pdata <- filter(da.vs.ctrl, region == !!region & celltype %in% celltypes) %>% pivot_wider(id_cols="gene", names_from="celltype", values_from="t.value")
+ggplot(aes(x=vCM2, y=MY1), data=pdata) + geom_point()
+```
+
+Look at the abundances
+
+```{r}
+prop.subset <- prop[prop$Region == region,]
+ct <- cast(prop.subset, Patient ~ cell_states, value="proportion", fun.aggregate=mean)
+ct[is.na(ct)] <- 0
+rownames(ct) <- ct$Patient
+dn <- list(rownames(ct), colnames(ct)[-1])
+ct <- as.matrix(ct[,-1]) + 0.01 ## add pseudo count
+dimnames(ct) <- dn
+covar <- covariates[match(rownames(ct), covariates$Patient),]
+prop.subset <- merge(prop.subset, covar, by="Patient")
+Z <- clr(acomp(ct))
+data <- data.frame(Z[,celltypes], covar) %>% pivot_longer(cols=celltypes, names_to="celltype", values_to="abundance")
+print(ggplot(data=data) + geom_boxplot(aes(x=celltype, y=abundance, col=Gene)))
+```
+
+
+#### Example vFB1.0 and vFB2 in LV
+
+Plot the correlation of t scores as a scatter plot
+```{r}
+region <- "LV"
+celltypes <- c("vFB1.0", "vFB2")
+pdata <- filter(da.vs.ctrl, region == !!region & celltype %in% celltypes) %>% pivot_wider(id_cols="gene", names_from="celltype", values_from="t.value")
+ggplot(aes(x=vFB2, y=vFB1.0), data=pdata) + geom_point()
+```
+
+Look at the abundances
+
+```{r}
+prop.subset <- prop[prop$Region == region,]
+ct <- cast(prop.subset, Patient ~ cell_states, value="proportion", fun.aggregate=mean)
+ct[is.na(ct)] <- 0
+rownames(ct) <- ct$Patient
+dn <- list(rownames(ct), colnames(ct)[-1])
+ct <- as.matrix(ct[,-1]) + 0.01 ## add pseudo count
+dimnames(ct) <- dn
+covar <- covariates[match(rownames(ct), covariates$Patient),]
+prop.subset <- merge(prop.subset, covar, by="Patient")
+Z <- clr(acomp(ct))
+data <- data.frame(Z[,celltypes], covar) %>% pivot_longer(cols=celltypes, names_to="celltype", values_to="abundance")
+print(ggplot(data=data) + geom_boxplot(aes(x=celltype, y=abundance, col=Gene)))
+```
+
+
+
+
+## Cell type differential abundance between genotypes
+
+```{r, warning=FALSE, message=FALSE}
+da.vs.ctrl.ct <- NULL
+clr.df <- NULL
+
+for (region in unique(prop.coarse$Region)) {
+
+  ct <- get.proportion.matrix(prop.coarse, region, celltype_col="cell_type")
+  # ct <- cast(prop.coarse[prop.coarse$Region == region,], Patient ~ cell_type, value="proportion", fun.aggregate=mean)
+  # ct[is.na(ct)] <- 0
+  # rownames(ct) <- ct$Patient
+  # dn <- list(rownames(ct), colnames(ct)[-1])
+  # ct <- as.matrix(ct[,-1]) 
+  # dimnames(ct) <- dn
+  # all.zero <- rowSums(ct) == 0
+  # ct <- ct + 0.01 ## add pseudo count
+  
+  covar <- covariates[match(rownames(ct), covariates$Patient),]
+
+  Z <- clr(acomp(ct))
+  clr.df <- rbind(clr.df, data.frame(Region=region, Patient=rownames(Z), Z))
+
+  for (celltype in colnames(ct)) {
+    for (gene in setdiff(unique(covar$Gene), "control")) {
+      lvls <- c("control", gene)
+      select <- covar$Gene %in% lvls & !all.zero
+      data <- data.frame(abundance=Z[,celltype], proportion=ct[,celltype], covar)[select,]
+      data$Gene <- factor(data$Gene, levels=lvls)
+      m <- lm(abundance ~ Gene, data=data)
+      smr <- t(coef(summary(m))[2,])
+      m2 <- lm(proportion ~ Gene, data=data)
+      smr2 <- t(coef(summary(m2))[2,])
+      colnames(smr2) <- paste("prop",colnames(smr2), sep="_")
+      ## two ways to normalize (either to overall mean)
+      mean.prop <- mean(data$proportion)
+      ## or to mean in controls
+      mean.prop.ctrl <- coef(m2)[1]
+      da.vs.ctrl.ct <- rbind(da.vs.ctrl.ct, data.frame(celltype, gene, region, smr, smr2, mean.prop, mean.prop.ctrl, check.names=FALSE))
+    }
+  }
+}
+da.vs.ctrl.ct <- data.frame(da.vs.ctrl.ct, FDR=p.adjust(da.vs.ctrl.ct$`Pr(>|t|)`, "BH"))
+
+write_tsv(clr.df, "results/current/celltypes_CLR.txt")
+write_tsv(da.vs.ctrl.ct, "results/current/celltypes_DA_gt_vs_ctrl.txt")
+
+```
+
+Just look at significant differences
+```{r}
+da.vs.ctrl.ct[da.vs.ctrl.ct$FDR < 0.05,] %>% datatable()
+```
+
+Visualize these results as heatmaps
+```{r}
+ggplot(data=da.vs.ctrl.ct) + geom_tile(aes(x=celltype, y=gene, fill=t.value)) + geom_point(aes(x=celltype, y=gene,color=FDR < 0.05), data=da.vs.ctrl.ct[da.vs.ctrl.ct$FDR < 0.05,]) + scale_fill_gradient2() + flipx + facet_grid(region~.)
+```
+
+
+For the paper we would like a plot of the percent changes (beta1). Also, we would like to consider only the LV and RV regions.
+
+```{r}
+## remove other regions
+x <- filter(da.vs.ctrl.ct, region %in% c("LV", "RV"))
+## recompute FDR
+x$FDR <- p.adjust(x$Pr...t.., "BH")
+ggplot(data=x) + geom_tile(aes(x=celltype, y=gene, fill=prop_Estimate)) + geom_point(aes(x=celltype, y=gene,color=FDR < 0.05), data=filter(x, FDR < 0.05)) + scale_fill_gradient2() + flipx + facet_grid(region~.) + labs(fill="Proportion\nchange")
+```
+
+Plot this relative to the original proportions
+```{r}
+p <- ggplot(data=x) + geom_tile(aes(x=celltype, y=gene, fill=prop_Estimate/mean.prop.ctrl)) + geom_point(aes(x=celltype, y=gene,color=FDR < 0.05), data=filter(x, FDR < 0.05)) + scale_fill_gradient2(limits=function(old) c(-max(abs(old)), max(abs(old)))) + flipx + facet_grid(region~.) + labs(fill="Proportion change\nrelative to control")
+print(p)
+```
+
+Save as png and pdf
+```{r}
+png(file="results/current/celltypes_DA_gt_vs_ctrl.png", width=750, height=350, res=100)
+print(p)
+dev.off()
+
+pdf(file="results/current/celltypes_DA_gt_vs_ctrl.pdf", width=7.5, height=3.5)
+print(p)
+dev.off()
+```
+
+
+
+For comparison the t scores
+```{r}
+ggplot(data=x) + geom_tile(aes(x=celltype, y=gene, fill=t.value)) + geom_point(aes(x=celltype, y=gene,color=FDR < 0.05), data=filter(x, FDR < 0.05)) + scale_fill_gradient2() + flipx + facet_grid(region~.)
+```
+
+
+
+### Summarize these results
+
+Really interesting cell types would be those that specifically change in just a single genotype.
+
+```{r}
+da.in.all.regions <- da.vs.ctrl.ct %>% filter(region %in% c("LV", "RV")) %>% 
+  select(celltype, region, gene, FDR) %>% pivot_wider(names_from="region", values_from="FDR") %>% 
+  mutate(da.all.regions=LV < 0.05 & RV < 0.05)
+```
+
+First we look just for cell types that change in all regions
+
+```{r}
+interesting.cts <-  da.in.all.regions %>% 
+  group_by(celltype) %>% summarise(nr.da.gt=sum(da.all.regions)) %>% 
+  filter(nr.da.gt == 1)
+interesting.cts <- interesting.cts[[1]]
+
+filter(da.in.all.regions, celltype %in% interesting.cts & da.all.regions == TRUE) %>% kbl() %>% kable_styling()
+```
+
+Next look for cell types that change only in one region and one genotype
+
+```{r}
+selected <- da.vs.ctrl.ct %>% filter(region %in% c("LV", "RV")) %>% 
+  select(celltype, region, gene, FDR)
+interesting.cts <- selected %>% group_by(celltype) %>% 
+  summarise(nr.da.gt=sum(FDR < 0.05)) %>% filter(nr.da.gt == 1)
+interesting.cts <- interesting.cts[[1]]
+filter(selected, celltype %in% interesting.cts & FDR < 0.05) %>% kbl() %>% kable_styling()
+```
+
+```{r}
+selected <- da.vs.ctrl.ct %>% filter(region %in% c("LV", "RV")) %>% group_by(gene, celltype) %>% summarise(assoc=any(FDR < 0.05)) 
+indicator <- selected %>% pivot_wider(id_cols=c("celltype", "gene"), names_from="gene", values_from="assoc")
+cols <- 2:ncol(indicator)
+indicator <- as.data.frame(indicator)
+rownames(indicator) <- indicator$celltype
+library(pheatmap)
+mat <- as.matrix(indicator[,cols])
+for (i in 1:ncol(mat)) {
+  mat[,i] <- as.numeric(mat[,i])  
+}
+pheatmap(t(mat), legend=F)
+```
+
+Select only the cell types that show up in exactly one genotype
+```{r}
+ct <- (selected %>% group_by(celltype) %>% summarise(ngt=sum(assoc == TRUE)) %>% filter(ngt == 1) )$celltype
+selected <- filter(selected, assoc == TRUE & celltype %in% ct) %>% inner_join(unique(select(da.vs.ctrl.ct, region, celltype, gene, FDR)))
+filter(da.vs.ctrl.ct, celltype %in% ct & FDR <0.05) %>% kbl() %>% kable_styling()
+```
+
+
+Plot specific examples
+
+```{r}
+for (i in 1:nrow(selected)) {
+  pdata <- inner_join(plot.data.coarse, selected[i,], by=c(Region="region", cell_type="celltype"))
+  lvls <- c("control", sort(setdiff(pdata$Gene, "control")))
+  pdata$Gene <- factor(pdata$Gene, levels=lvls)
+  #p <- ggplot(aes(x=Gene, y=proportion, fill=Gene), data=pdata) + geom_boxplot()
+  p <- ggboxplot(pdata, x="Gene", y="proportion", fill="Gene")  + flipx + stat_pvalue_manual(data=data.frame(group1="control", group2=as.character(pdata$gene[[1]]), p.adj=round(pdata$FDR[[1]], 3), stringsAsFactors=FALSE), label="p.adj", y.position=max(pdata$proportion), map_signif_level=TRUE, )  + theme(legend.position="right") + labs(title=with(selected[i,], paste(celltype, region)))
+  print(p)
+}
+```
+
+
+## Check for region specific genotype differences (region x genotype interaction)
+
+```{r}
+get.data.2regions <- function(prop.coarse, region1, region2, celltype_col, celltype, gene) {
+  ct.lv <- get.proportion.matrix(prop.coarse, region1, celltype_col)
+  ct.rv <- get.proportion.matrix(prop.coarse, region2, celltype_col)
+  
+  all.zero.lv <- rowSums(ct.lv) == 0
+  all.zero.rv <- rowSums(ct.rv) == 0
+  
+  covar.lv <- covariates[match(rownames(ct.lv), covariates$Patient),]
+  covar.rv <- covariates[match(rownames(ct.rv), covariates$Patient),]
+  
+  Z.lv <- clr(acomp(ct.lv))
+  Z.rv <- clr(acomp(ct.rv))
+  
+  lvls <- c("control", gene)
+  select <- covar.lv$Gene %in% lvls & !all.zero.lv
+  data <- data.frame(abundance=Z.lv[,celltype], proportion=ct.lv[,celltype], covar.lv)[select,]
+  n1 <- sum(select)
+  select <- covar.rv$Gene %in% lvls & !all.zero.rv
+  data <- rbind(data, data.frame(abundance=Z.rv[,celltype], proportion=ct.rv[,celltype], covar.rv)[select,])
+  data$Gene <- factor(data$Gene, levels=lvls)
+  data$region <- factor(c(rep(region1, n1), rep(region2, sum(select))))
+  
+  return(data)
+}
+
+diff.abundance.by.region <- function(prop.coarse, region1, region2, celltype_col) {
+  da.vs.ctrl.region.ct <- NULL
+  
+  for (celltype in unique(prop.coarse[,celltype_col])) {
+    for (gene in setdiff(unique(covar$Gene), "control")) {
+      data <- get.data.2regions(prop.coarse, region1, region2, celltype_col, celltype, gene)
+      ## check that enough samples are available in each combination
+      sample.counts <- with(data, table(Gene, region))
+      if (min(sample.counts) == 0) {
+        next
+      }
+      m <- lm(abundance ~ Gene * region, data=data)
+      smr <- t(coef(summary(m))[4,])
+      m2 <- lm(proportion ~ Gene *region, data=data)
+      smr2 <- t(coef(summary(m2))[4,])
+      colnames(smr2) <- paste("prop",colnames(smr2), sep="_")
+      da.vs.ctrl.region.ct <- rbind(da.vs.ctrl.region.ct, data.frame(celltype, gene, smr, smr2, mean.prop=mean(data$proportion), check.names=FALSE))
+    }
+  }
+  
+  da.vs.ctrl.region.ct <- data.frame(da.vs.ctrl.region.ct, FDR=p.adjust(da.vs.ctrl.region.ct$`Pr(>|t|)`, "BH"))
+  return(da.vs.ctrl.region.ct)
+}
+```
+
+
+### DA x region cell types
+
+```{r, warning=FALSE, message=FALSE}
+da.vs.ctrl.region.ct <- diff.abundance.by.region(prop.coarse, region1="LV", region2="RV", celltype_col="cell_type")
+write_tsv(da.vs.ctrl.region.ct, "results/current/celltypes_DA_gt_vs_ctrl_region_specific.txt")
+da.vs.ctrl.region.ct  %>% arrange(FDR)# %>% datatable()
+```
+
+Visualize the region specific effects
+```{r}
+plot.region.specific <- function(da.vs.ctrl.region.ct, prop.coarse, celltype_col, cutoff=0.1) {
+  for (i in which(da.vs.ctrl.region.ct$FDR < cutoff)) {
+    ct <- da.vs.ctrl.region.ct[i, "celltype"]
+    gene <- da.vs.ctrl.region.ct[i, "gene"]
+    data <- get.data.2regions(prop.coarse, region1="LV", region2="RV", celltype_col=celltype_col, celltype=ct, gene=gene)
+    g <- data %>% ggplot(aes(x=Gene, y=proportion, col=region)) + geom_boxplot() + labs(title=ct)
+    print(g)
+  }
+}
+plot.region.specific(da.vs.ctrl.region.ct, prop.coarse, celltype_col="cell_type", cutoff=0.1)
+```
+
+
+
+### DA x region cell states
+
+```{r, warning=FALSE, message=FALSE}
+da.vs.ctrl.region <- diff.abundance.by.region(prop, region1="LV", region2="RV", celltype_col="cell_states")
+write_tsv(da.vs.ctrl.region, "results/current/cellstates_DA_gt_vs_ctrl_region_specific.txt")
+da.vs.ctrl.region %>% arrange(FDR)# %>% datatable()
+```
+Visualize the region specific effects
+```{r}
+plot.region.specific(da.vs.ctrl.region, prop, celltype_col="cell_states", cutoff=0.1)
+```
+
+
+Filter these results for the more frequent cell states and then compute FDR
+```{r}
+da.vs.ctrl.region.freq <- filter(da.vs.ctrl.region, celltype %in% selected.cellstates)
+da.vs.ctrl.region.freq$FDR <- p.adjust(da.vs.ctrl.region.freq$Pr...t.., "BH")
+da.vs.ctrl.region.freq %>% arrange(FDR) %>% datatable()
+```
+
+Visualize the region specific effects (if any)
+```{r}
+plot.region.specific(da.vs.ctrl.region.freq, prop, celltype_col="cell_states", cutoff=0.1)
+```
+
+# Analysis of proportionality (ratios of pairs of cell types)
+
+We will look at the ratio of two cell types to one another and compare these ratios between groups (genotype vs ctrl).
+
+```{r, eval=FALSE}
+table(covariates$Gene)
+```
+
+Use all genes with at least 5 samples
+
+Define a function to compute difference in log ratios
+```{r}
+## here proportions and counts are matrices patients x celltypes
+get.logratio.df <- function(proportions, counts, covariates, celltype1, celltype2) {
+  Patient <- rownames(proportions)
+  if ("Patients" %in% colnames(proportions)) {
+    Patient <- proportions$Patient
+  }
+  lratios <- data.frame(Patient, celltype1, celltype2, 
+                        count.celltype1=counts[,celltype1], 
+                        count.celltype2=counts[,celltype2], 
+                        prop.celltype1=proportions[,celltype1], 
+                        prop.celltype2=proportions[,celltype2], 
+                        logratio=log(proportions[,celltype1] + 0.01) - log(proportions[,celltype2] + 0.01),
+                        logratio.counts=log(counts[,celltype1] + 1) - log(counts[,celltype2] + 1))
+  lratios <- merge(lratios, covariates, by="Patient")
+  return(lratios)
+}
+
+compute.logratios.by.genotype <- function(proportions, counts, covariates, celltype1, celltype2) {
+  lratios <- get.logratio.df(proportions, counts, covariates, celltype1, celltype2) 
+  
+  lratios.by.gt <- NULL
+  genes.to.test <- setdiff(names(which(table(lratios$Gene) >= 3)), "control")
+  if (length(genes.to.test) == 0) {
+    cat("Testing ", length(genes.to.test), " genes.\n")
+  }
+  for (gene in genes.to.test) {
+    lvls <- c("control", gene)
+    data <- lratios[lratios$Gene %in% lvls,]
+    data$Gene <- factor(data$Gene, levels=lvls)
+    test <- t.test(logratio ~ Gene, data=data)
+    mean.counts.celltype1 <- with(data, tapply(count.celltype1, Gene, mean))
+    names(mean.counts.celltype1) <- paste0("mean.counts.celltype1.", c("control", "mutation"))
+    mean.counts.celltype2 <- with(data, tapply(count.celltype2, Gene, mean))
+    names(mean.counts.celltype2) <- paste0("mean.counts.celltype2.", c("control", "mutation"))
+    mean.prop.celltype1 <- with(data, tapply(prop.celltype1, Gene, mean))
+    names(mean.prop.celltype1) <- paste0("mean.prop.celltype1.", c("control", "mutation"))
+    mean.prop.celltype2 <- with(data, tapply(prop.celltype2, Gene, mean))
+    names(mean.prop.celltype2) <- paste0("mean.prop.celltype2.", c("control", "mutation"))
+    ## flip the sign of the t statistic (group 1 is control but we would like to have mutation as group 1)
+    gene.res <- data.frame(celltype1, celltype2, gene, t(test$estimate), t=-test$statistic, p=test$p.value, t(mean.counts.celltype1), t(mean.counts.celltype2), t(mean.prop.celltype1), t(mean.prop.celltype2))
+    colnames(gene.res)[4:5] <- paste0("logratio.mean.", c("control", "mutation"))
+    lratios.by.gt <- rbind(lratios.by.gt, gene.res)
+  }
+  ## also add the difference of the two log ratios as log fold change of ratios
+  lratios.by.gt$logFC <- with(lratios.by.gt, logratio.mean.mutation - logratio.mean.control)
+  return(lratios.by.gt)
+}
+```
+
+## LV cell types
+
+Run it on the **coarse grained** annotation
+```{r, warning=FALSE}
+ct.coarse <- cast(plot.data.coarse[plot.data.coarse$Region == "LV",], Patient ~ cell_type, value="proportion", fun.aggregate=mean)
+ct.coarse[is.na(ct.coarse)] <- 0
+rownames(ct.coarse) <- ct.coarse[,1]
+count.coarse <- cast(plot.data.coarse[plot.data.coarse$Region == "LV",], Patient ~ cell_type, value="count", fun.aggregate=mean)
+count.coarse[is.na(count.coarse)] <- 0
+rownames(count.coarse) <- count.coarse[,1]
+
+lratios.by.gt.lv <- NULL
+
+coarse.cts <- setdiff(colnames(ct.coarse), "Patient")
+for (i in 1:(length(coarse.cts) - 1)) {
+  ct1 <- coarse.cts[i]
+  for (j in (i+1):length(coarse.cts)) {
+    ct2 <- coarse.cts[j]
+    lratios.by.gt.lv <- rbind(lratios.by.gt.lv, compute.logratios.by.genotype(ct.coarse, count.coarse, covariates, celltype1=ct1, celltype2=ct2))
+  }
+}
+lratios.by.gt.lv <- data.frame(lratios.by.gt.lv, FDR=p.adjust(lratios.by.gt.lv$p, "BH"))
+write.table(lratios.by.gt.lv, "results/current/celltypes_ratios_by_genotypes_LV.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+#lratios.by.gt.lv[lratios.by.gt.lv$FDR < 0.05,]
+```
+
+
+Visualize these results
+```{r, fig.width=8}
+pdata <- lratios.by.gt.lv
+
+## make symmetric
+tmp <- pdata
+tmp2 <- pdata$celltype2
+tmp$celltype2 <- tmp$celltype1
+tmp$celltype1 <- tmp2
+tmp$logFC <- -tmp$logFC
+pdata <- rbind(pdata, tmp)
+
+## log base 2 is easier to interpret
+ggplot(data=pdata) + geom_tile(aes(x=celltype1, y=celltype2, fill=logFC / log(2))) + scale_fill_gradient2() + geom_text(aes(x=celltype1, y=celltype2, label=round(exp(logFC), digits=1), color=FDR < 0.05), size=8 / ggplot2::.pt, data=filter(pdata, FDR < 0.05)) + scale_color_manual(values=c("TRUE"="black"), aesthetics="color") + labs(title="Change of ratios of cell types by genotype in Left ventricle", fill="log2FC") + flipx + facet_wrap(~gene, ncol=3)
+```
+
+The log2FC quantifies the difference of log(celltype1 / celltype2) between patients with the mutation vs controls. High values of t mean that the log ratio is higher in patients with mutations. This means that celltype1 is more abundant in relation to cell type2 in patients with mutations than in controls.
+
+
+Another way of visualizing could be a graph, where each node is a celltype. We would first identify groups of nodes that do not change their ratios. Then we would connect them to the other groups indicating the relative change between them on the edges.
+
+```{r}
+library(Rgraphviz)
+no.change <- graphNEL(nodes=celltypes)
+#no.change <- addEdge()
+```
+
+
+
+
+For each genotype find the strongest difference (absolute t score)
+```{r}
+topn = 3
+top.pairs.lv <- filter(lratios.by.gt.lv, FDR < 0.05) %>% filter(celltype1 != "Uncertain" & celltype2 != "Uncertain") %>% group_by(gene) %>% slice_max(abs(t), n=topn)
+top.pairs.lv
+```
+
+Visualize the proportions in controls and patients with mutation
+```{r}
+plist <- list()
+for (i in 1:nrow(top.pairs.lv)) {
+  ct1 <- as.character(top.pairs.lv[["celltype1"]][i])
+  ct2 <- as.character(top.pairs.lv[["celltype2"]][i])
+  lratios <- get.logratio.df(ct.coarse, count.coarse, covariates, ct1, ct2)
+  ## select only controls or mutation samples
+  lratios <- filter(lratios, Gene %in% c("control", as.character(top.pairs.lv[["gene"]][i])))
+  
+  p1 <- ggplot(data=lratios) + geom_point(aes(x=prop.celltype1, y=prop.celltype2, col=Gene)) + geom_smooth(aes(x=prop.celltype1, y=prop.celltype2, col=Gene), method='lm', formula=y~x) + labs(x=paste("Proportion", ct1), y=paste("Proportion", ct2))
+  p2 <- ggplot(data=lratios) + geom_point(aes(x=count.celltype1, y=count.celltype2, col=Gene)) + geom_smooth(aes(x=count.celltype1, y=count.celltype2, col=Gene), method='lm', formula=y~x) + labs(x=paste("Count", ct1), y=paste("Count", ct2))
+  plist <- c(plist, list(p1, p2))
+}
+
+plots <- ggarrange(plotlist=plist, ncol=2, nrow=topn)
+for (i in 1:length(plots)) {
+  print(plots[[i]])  
+}
+```
+
+Also arrange only the proportion plots per gene
+
+```{r, fig.width=10, fig.heigh=10}
+idx <- 2 * 0:(length(plist) / 2 - 1) + 1
+ggarrange(plotlist=plist[idx], ncol=topn, nrow=length(idx) / topn, align="hv")
+```
+
+Specifically look at the mast cells in LMNA
+
+```{r, fig.width=9, fig.height=3}
+other.cts <-  c(as.character(filter(top.pairs.lv, celltype1 == "Mast" & gene == "LMNA")[["celltype2"]]), 
+                as.character(filter(top.pairs.lv, celltype2 == "Mast" & gene == "LMNA")[["celltype1"]]))
+other.cts <- unique(other.cts)
+
+plot.list <- list()
+for (other in other.cts) {
+  ct1 <- "Mast"
+  ct2 <- other
+  lratios <- get.logratio.df(ct.coarse, count.coarse, covariates, ct1, ct2)
+  ## select only controls or mutation samples
+  lratios <- filter(lratios, Gene %in% c("control", "LMNA"))
+  
+  p1 <- ggplot(data=lratios) + geom_point(aes(x=prop.celltype1, y=prop.celltype2, col=Gene)) + geom_smooth(aes(x=prop.celltype1, y=prop.celltype2, col=Gene), method='lm', formula=y~x) + labs(x=paste("Proportion", ct1), y=paste("Proportion", ct2)) + theme(legend.position="bottom")
+
+  plot.list <- c(plot.list, list(p1))
+}
+ggarrange(plotlist=plot.list, ncol=topn, nrow=1, align="hv")
+```
+
+Check the significance of these findings
+
+```{r}
+lratios <- get.logratio.df(ct.coarse, count.coarse, covariates, "Mast", "Lymphoid")
+## select only controls or mutation samples
+lratios <- filter(lratios, Gene %in% c("control", "LMNA"))
+
+ggplot(data=lratios) + geom_point(aes(x=prop.celltype1, y=prop.celltype2, col=Gene)) + geom_smooth(aes(x=prop.celltype1, y=prop.celltype2, col=Gene), method='lm', formula=y~x) + labs(x=paste("Proportion", ct1), y=paste("Proportion", ct2)) + theme(legend.position="bottom")
+
+m <- lm(prop.celltype2 ~ prop.celltype1 * Gene , data=lratios)
+anova(m)
+
+
+m1 <- lm(prop.celltype2 ~ prop.celltype1, data=filter(lratios, Gene=="control"))
+summary(m1)
+m2 <- lm(prop.celltype2 ~ prop.celltype1, data=filter(lratios, Gene=="LMNA"))
+summary(m2)
+
+with(filter(lratios, Gene=="control"), cor.test(prop.celltype2, prop.celltype1))
+
+with(filter(lratios, Gene=="LMNA"), cor.test(prop.celltype2, prop.celltype1))
+
+```
+
+
+
+## RV cell types
+
+```{r, fig.width=8}
+ct.coarse <- get.proportion.matrix(plot.data.coarse, "RV", "cell_type", pseudocount=0)
+count.coarse <-  get.proportion.matrix(plot.data.coarse, "RV", "cell_type", pseudocount=0, value_col="count")
+
+lratios.by.gt <- NULL
+
+coarse.cts <- setdiff(colnames(ct.coarse), "Patient")
+for (i in 1:(length(coarse.cts) - 1)) {
+  ct1 <- coarse.cts[i]
+  for (j in (i+1):length(coarse.cts)) {
+    ct2 <- coarse.cts[j]
+    lratios.by.gt <- rbind(lratios.by.gt, compute.logratios.by.genotype(ct.coarse, count.coarse, covariates, celltype1=ct1, celltype2=ct2))
+  }
+}
+lratios.by.gt <- data.frame(lratios.by.gt, FDR=p.adjust(lratios.by.gt$p, "BH"))
+write.table(lratios.by.gt, "results/current/celltypes_ratios_by_genotypes_RV.txt", sep="\t", quote=FALSE, row.names=FALSE)
+```
+
+
+```{r, fig.width=8}
+pdata <- lratios.by.gt
+
+## make symmetric
+tmp <- pdata
+tmp2 <- pdata$celltype2
+tmp$celltype2 <- tmp$celltype1
+tmp$celltype1 <- tmp2
+tmp$logFC <- -tmp$logFC
+pdata <- rbind(pdata, tmp)
+
+## log base 2 is easier to interpret
+ggplot(data=pdata) + geom_tile(aes(x=celltype1, y=celltype2, fill=logFC / log(2))) + scale_fill_gradient2() + geom_text(aes(x=celltype1, y=celltype2, label=round(exp(logFC), digits=2), color=FDR < 0.05), size=8 / ggplot2::.pt, data=filter(pdata, FDR < 0.05)) + scale_color_manual(values=c("TRUE"="black"), aesthetics="color") + labs(title="Change of ratios of cell types by genotype in right ventricle", fill="log2FC") + flipx + facet_wrap(~gene, ncol=3)
+```
+
+
+### Check the adipocytes specifically in RV
+
+For PKP2 the phenomenon of fibro-fatty replacement is expected to be visible among the adipocytes
+
+```{r}
+# data <- merge(as.data.frame(as.matrix(ct.coarse)), covariates, by.x="row.names", by.y="Patient")
+ggplot(aes(x=Gene, y=proportion), data=filter(plot.data.coarse, Region == "RV" & cell_type == "AD")) + geom_boxplot()
+```
+
+Zoom in a bit
+
+```{r}
+# data <- merge(as.data.frame(as.matrix(ct.coarse)), covariates, by.x="row.names", by.y="Patient")
+ggplot(aes(x=Gene, y=proportion), data=filter(plot.data.coarse, Region == "RV" & cell_type == "AD")) + geom_boxplot() + scale_y_continuous(limits=c(0, 0.06)) + labs(title="AD in RV")
+```
+
+## LV cell states
+
+Run it on the **fine grained** annotation
+
+```{r, warning=FALSE}
+plot.data <- merge(prop, covariates, by="Patient")
+
+ct.fine<- cast(plot.data[plot.data$Region == "LV",], Patient ~ cell_states, value="proportion", fun.aggregate=mean)
+ct.fine[is.na(ct.fine)] <- 0
+rownames(ct.fine) <- ct.fine[,1]
+count.fine <- cast(plot.data[plot.data$Region == "LV",], Patient ~ cell_states, value="count", fun.aggregate=mean)
+count.fine[is.na(count.fine)] <- 0
+rownames(count.fine) <- count.fine[,1]
+
+lratios.by.gt.fine <- NULL
+
+fine.cts <- setdiff(colnames(ct.fine), "Patient")
+for (i in 1:(length(fine.cts) - 1)) {
+  ct1 <- fine.cts[i]
+  for (j in (i+1):length(fine.cts)) {
+    ct2 <- fine.cts[j]
+    lratios.by.gt.fine <- rbind(lratios.by.gt.fine, compute.logratios.by.genotype(ct.fine, count.fine, covariates, celltype1=ct1, celltype2=ct2))
+  }
+}
+lratios.by.gt.fine <- data.frame(lratios.by.gt.fine, FDR=p.adjust(lratios.by.gt.fine$p, "BH"))
+
+write.table(lratios.by.gt.fine, "results/current/cellstates_ratios_by_genotypes_LV.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+#lratios.by.gt.fine[lratios.by.gt.fine$FDR < 0.05,]
+```
+
+
+Visualize these results
+
+We should split these plots by the coarse grained annotation.
+
+```{r}
+fine2coarse <- unique(meta[,c("cell_states", "cell_type")])
+fine2coarse <- fine2coarse[order(fine2coarse$cell_states),]
+dup <- unique(fine2coarse$cell_states[which(duplicated(fine2coarse$cell_states))])
+if (length(dup) > 0) {
+  datatable(fine2coarse[fine2coarse$cell_states %in% dup,])
+}
+```
+
+Visualize the correspondence
+```{r, fig.width=10, fig.height=5}
+f2c <- with(meta, table(cell_states, cell_type))
+## normalize by row
+f2c.prop <- f2c / rowSums(f2c)
+f2c.prop <- melt(f2c.prop)
+ggplot(data=f2c.prop) + geom_tile(aes(y=cell_type, x=cell_states, fill=value)) + flipx
+```
+
+Add coarse grained annotation
+```{r}
+lratios.by.gt.fine <- merge(lratios.by.gt.fine, fine2coarse, by.x="celltype1", by.y="cell_states")
+lratios.by.gt.fine <- dplyr::rename(lratios.by.gt.fine, coarse_celltype1=cell_type)
+lratios.by.gt.fine <- merge(lratios.by.gt.fine, fine2coarse, by.x="celltype2", by.y="cell_states")
+lratios.by.gt.fine <- dplyr::rename(lratios.by.gt.fine, coarse_celltype2=cell_type)
+```
+
+
+<!-- This is not so useful! too much information!!
+
+For each pair of coarse grained cell types that were significantly different between genotypes we look into the underlying cell states.
+
+```{r, fig.width=10, eval=FALSE}
+all.coarse <- with(lratios.by.gt.fine, union(coarse_celltype1, coarse_celltype2))
+
+for (gene in setdiff(unique(lratios.by.gt.fine$gene), NA)) {
+  for (coarse in all.coarse) {
+    selected1 <- lratios.by.gt.fine[lratios.by.gt.fine$coarse_celltype1 == coarse,]
+    selected2 <- lratios.by.gt.fine[lratios.by.gt.fine$coarse_celltype2 == coarse,]
+    ## flip ct1 and ct2 for the second selection
+    tmp <- selected2$celltype2
+    selected2$celltype2 <- selected2$celltype1 
+    selected2$celltype1 <- tmp 
+    selected2$t <- -selected2$t
+    selected <- rbind(selected1, selected2)
+  
+    selected <- selected[which(selected$gene == gene),]
+    if (nrow(selected) > 0) {
+      plt <- ggplot(data=selected) + geom_tile(aes(x=celltype2, y=celltype1, fill=t)) + scale_fill_gradient2() + geom_point(aes(x=celltype2, y=celltype1, color=FDR < 0.05), data=selected[which(selected$FDR < 0.05),]) + labs(title=paste0("Change of ratios of cell type abundance ", gene, " vs control"), subtitle=paste("Cell states of", coarse, "vs the rest in LV"), fill="t statistic") + flipx
+      print(plt)
+    }
+  }
+}
+```
+
+
+```{r, eval=FALSE}
+ggplot(data=lratios.by.gt) + geom_tile(aes(x=celltype1, y=celltype2, fill=t)) + scale_fill_gradient2() + geom_point(aes(x=celltype1, y=celltype2, color=FDR < 0.05), data=lratios.by.gt[lratios.by.gt$FDR < 0.05,]) + labs(title="Change of ratios of cell types by genotype in LV", fill="t statistic") + flipx + facet_wrap(~gene, ncol=3)
+```
+
+-->
+
+We look at the cell state ratios within each cell type
+
+```{r, fig.width=12, fig.height=10}
+plist <- list()
+plist2 <- list()
+all.coarse <- with(lratios.by.gt.fine, union(coarse_celltype1, coarse_celltype2))
+for (coarse in all.coarse) {
+  selected <- filter(lratios.by.gt.fine, coarse_celltype1 == coarse &
+                                         coarse_celltype2 == coarse)
+  if (nrow(selected) == 0) {
+    cat("No pairs for", coarse, "cell states\n")
+    next()
+  }
+  ## make the matrix symmetric
+  tmp <- selected
+  tmp2 <- selected$celltype2
+  tmp$celltype2 <-tmp$celltype1
+  tmp$celltype1 <- tmp2
+  tmp$logFC <- -tmp$logFC 
+  selected <- rbind(selected, tmp)
+  
+  ## if we have more than 11 cell states we need to scale down the size of the text
+  size <- 10 / ggplot2::.pt
+  ncs <- length(unique(selected$celltype1))
+  if (ncs > 11) {
+    size <- 11 / ncs * size
+  }
+    
+  ## change the log FC from natural to base 2 for easier interpretation
+  p <- ggplot(aes(x=celltype1, y=celltype2, fill=logFC / log(2)), data=selected) + geom_tile() + scale_fill_gradient2() + geom_text(aes(x=celltype1, y=celltype2, label=format(exp(logFC), digits=1), color=FDR < 0.05), size=size, data=filter(selected, FDR < 0.05)) + labs(title=paste("Change of ratios of ", coarse, " cell states by genotype in LV"), fill="log2FC") + flipx + scale_color_manual(values=c("TRUE"="black"), aesthetics = "color")
+  print(p + facet_wrap(~gene, ncol=3))
+  plist2 <- c(plist2, list(p + facet_wrap(~gene, ncol=3)))
+  plist <- c(plist, list(p + facet_wrap(~gene, ncol=5)))
+}
+```
+
+Output all figures into an A4 sized pdf
+```{r}
+s <- 3
+pdf(file="results/current/cellstates_ratios_by_genotypes_LV_by_celltype_by_row.pdf", width=8.3 * s, height=11.7 * s)
+print(ggarrange(plotlist=plist, nrow=8, ncol=1, align="v"))
+dev.off()
+s <- 1.5
+pdf(file="results/current/cellstates_ratios_by_genotypes_LV_by_celltype.pdf", width=11.7, height=8.3)
+print(ggarrange(plotlist=plist2, nrow=1, ncol=1))
+dev.off()
+```
+
+
+
+## RV cell states
+
+
+Run it on the **fine grained** annotation
+
+```{r, warning=FALSE}
+plot.data <- merge(prop, covariates, by="Patient")
+
+ct.fine<- cast(plot.data[plot.data$Region == "RV",], Patient ~ cell_states, value="proportion", fun.aggregate=mean)
+ct.fine[is.na(ct.fine)] <- 0
+rownames(ct.fine) <- ct.fine[,1]
+count.fine <- cast(plot.data[plot.data$Region == "RV",], Patient ~ cell_states, value="count", fun.aggregate=mean)
+count.fine[is.na(count.fine)] <- 0
+rownames(count.fine) <- count.fine[,1]
+
+lratios.by.gt.fine <- NULL
+
+fine.cts <- setdiff(colnames(ct.fine), "Patient")
+for (i in 1:(length(fine.cts) - 1)) {
+  ct1 <- fine.cts[i]
+  for (j in (i+1):length(fine.cts)) {
+    ct2 <- fine.cts[j]
+    lratios.by.gt.fine <- rbind(lratios.by.gt.fine, compute.logratios.by.genotype(ct.fine, count.fine, covariates, celltype1=ct1, celltype2=ct2))
+  }
+}
+lratios.by.gt.fine <- data.frame(lratios.by.gt.fine, FDR=p.adjust(lratios.by.gt.fine$p, "BH"))
+write.table(lratios.by.gt.fine, "results/current/cellstates_ratios_by_genotypes_RV.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+#lratios.by.gt.fine[lratios.by.gt.fine$FDR < 0.05,]
+```
+
+
+Add coarse grained annotation
+```{r}
+lratios.by.gt.fine <- merge(lratios.by.gt.fine, fine2coarse, by.x="celltype1", by.y="cell_states")
+lratios.by.gt.fine <- dplyr::rename(lratios.by.gt.fine, coarse_celltype1=cell_type)
+lratios.by.gt.fine <- merge(lratios.by.gt.fine, fine2coarse, by.x="celltype2", by.y="cell_states")
+lratios.by.gt.fine <- dplyr::rename(lratios.by.gt.fine, coarse_celltype2=cell_type)
+```
+
+
+For each pair of coarse grained cell types that were significantly different between genotypes we look into the underlying cell states.
+
+```{r, fig.width=10}
+all.coarse <- with(lratios.by.gt.fine, union(coarse_celltype1, coarse_celltype2))
+
+for (gene in setdiff(unique(lratios.by.gt.fine$gene), NA)) {
+  for (coarse in all.coarse) {
+    selected1 <- lratios.by.gt.fine[lratios.by.gt.fine$coarse_celltype1 == coarse,]
+    selected2 <- lratios.by.gt.fine[lratios.by.gt.fine$coarse_celltype2 == coarse,]
+    ## flip ct1 and ct2 for the second selection
+    tmp <- selected2$celltype2
+    selected2$celltype2 <- selected2$celltype1 
+    selected2$celltype1 <- tmp 
+    selected2$t <- -selected2$t
+    selected <- rbind(selected1, selected2)
+  
+    selected <- selected[which(selected$gene == gene),]
+    if (nrow(selected) > 0) {
+      plt <- ggplot(data=selected) + geom_tile(aes(x=celltype2, y=celltype1, fill=t)) + scale_fill_gradient2() + geom_point(aes(x=celltype2, y=celltype1, color=FDR < 0.05), data=selected[which(selected$FDR < 0.05),]) + labs(title=paste0("Change of ratios of cell type abundance ", gene, " vs control"), subtitle=paste("Cell states of", coarse, "vs the rest in LV"), fill="t statistic") + flipx
+      print(plt)
+    }
+  }
+}
+```
+
+
+
+## Look at Jon's results
+```{r}
+n <- load("data/current/from_jon/normalized_distributions_of_celltypes.rda")
+cor.clr <- read.csv("data/current/from_jon/Correlations_celltypes_by_genotype_clr.txt", sep="\t")
+
+cor.clr[cor.clr$cell1 == "CM" & cor.clr$cell2 == "FB", ]
+```
+
+```{r}
+cor.raw <- read.csv("data/current/from_jon/correlations_celltypes_by_genotype_normalized_percent.txt", sep="\t")
+cor.raw[cor.raw$cell1 == "CM" & cor.raw$cell2 == "FB", ]
+```
+
+
+
+
+## Prediction of genotype from composition
+
+As a proof of concept look at the most frequent mutation: TTN
+```{r}
+region <- "FW"
+
+ct <- cast(prop[prop$Region == region & prop$cell_states %in% selected.cellstates,], Patient ~ cell_states, value="proportion", fun.aggregate=mean)
+ct[is.na(ct)] <- 0
+rownames(ct) <- ct$Patient
+
+cts <- setdiff(colnames(ct), "Patient")
+
+covar.fw <- covariates[match(rownames(ct), covariates$Patient),]
+
+data <- merge(ct, covar.fw, by="Patient")
+rownames(data) <- data$Patient
+data <- data[,c("Gene", cts)]
+
+data <- data[data$Gene %in% c("TTN", "control"),]
+data$Gene <- factor(data$Gene, levels=c("control", "TTN"))
+```
+
+Split data into folds
+```{r}
+set.seed(0)
+nfolds <- 3
+foldid <- rep(NA, nrow(data))
+foldid[data$Gene == "control"] <- sample(1:nfolds, sum(data$Gene == "control"), replace=T)
+foldid[data$Gene == "TTN"] <- sample(1:nfolds, sum(data$Gene == "TTN"), replace=T)
+table(foldid, data$Gene)
+```
+
+
+Use glmnet to predict
+```{r}
+cv.res <- cv.glmnet(x=as.matrix(data[,cts]), y=data$Gene, type.measure="deviance", family="binomial", nfolds=3, foldids=foldids)
+plot(cv.res)
+```
+
+```{r}
+aucs <- rep(NA, nfolds)
+for (fold in 1:nfolds) {
+  m <- glmnet(x=as.matrix(data[foldid != fold,cts]), y=data$Gene[foldid != fold], type.measure="deviance", family="binomial", lambda=cv.res$lambda.min)
+  
+  pred <- predict(m, newx=as.matrix(data[foldid == fold,cts]))
+  
+  library(ROCR)
+  
+  p <- prediction(pred, as.numeric(data$Gene[foldid == fold]) - 1)
+  perf <- performance(p, measure = "tpr", x.measure = "fpr")
+  aucs[fold] <- performance(p, measure = "auc")@y.values[[1]]
+}
+plot(perf)
+```
+
+```{r}
+aucs
+```
+
+
+```{r}
+coefs <- as.matrix(coef(m))
+coefs
+```
+
+
+## Comparison with Jon's results
+
+```{r}
+n <- load("data/current/from_jon/Dist_cellnos_cellpcts_object011821.rda") # sto_cellno: counts and sto_cellpct percentages
+n <- load("data/current/from_jon/Comparison_Rcoeff_pct_clr.rda") # sto_clr: correlations from clr and sto_corr: from prop corrcomp: 
+```
+
+Look at the table that Jon has selected
+
+```{r}
+library(xlsx)
+jon.selection <- read.xlsx("presentations/cellprop-jon/Important relationships_celltypes_DCM.xlsx", 1, header=TRUE)
+jon.selection %>% datatable()
+```
+
+Merge this with the results based on ratios
+
+```{r}
+jon.selection.w.ratios <- inner_join(lratios.by.gt.lv, jon.selection, by=c("celltype1"="cell1", "celltype2"="cell2", "gene"="Genotype")) %>% arrange(celltype1, celltype2)
+jon.selection.w.ratios %>% datatable()
+```
+
+Check significance in both
+
+```{r}
+with(jon.selection.w.ratios, table(FDR=FDR < 0.1, pval=pval < 0.05))
+```
+
+```{r}
+filter(jon.selection.w.ratios, FDR < 0.1 & pval < 0.05)
+```
+
+```{r}
+write.xlsx(jon.selection.w.ratios, file="presentations/cellprop-jon/Important relationships_celltypes_DCM_w_ratios.xlsx")
+```
+
+
+Plot these correlations
+
+```{r}
+plist <- list()
+for (i in 1:nrow(jon.selection.w.ratios)) {
+  ct1 <- as.character(jon.selection.w.ratios[["celltype1"]][i])
+  ct2 <- as.character(jon.selection.w.ratios[["celltype2"]][i])
+  lratios <- get.logratio.df(ct.coarse, count.coarse, covariates, ct1, ct2)
+  ## select only controls or mutation samples
+  lratios <- filter(lratios, Gene %in% c("control", as.character(jon.selection.w.ratios[["gene"]][i])))
+  
+  p1 <- ggplot(data=lratios) + geom_point(aes(x=prop.celltype1, y=prop.celltype2, col=Gene)) + geom_smooth(aes(x=prop.celltype1, y=prop.celltype2, col=Gene), method='lm', formula=y~x) + labs(x=paste("Proportion", ct1), y=paste("Proportion", ct2))
+  p2 <- ggplot(data=lratios) + geom_point(aes(x=count.celltype1, y=count.celltype2, col=Gene)) + geom_smooth(aes(x=count.celltype1, y=count.celltype2, col=Gene), method='lm', formula=y~x) + labs(x=paste("Count", ct1), y=paste("Count", ct2))
+  plist <- c(plist, list(p1, p2))
+}
+
+#plots <- ggarrange(plotlist=plist, ncol=2, nrow=topn)
+#for (i in 1:length(plots)) {
+#  print(plots[[i]])  
+#}
+for (i in 1:nrow(jon.selection.w.ratios)) {
+  print(plist[[(i - 1) * 2 + 1]])
+}
+```
