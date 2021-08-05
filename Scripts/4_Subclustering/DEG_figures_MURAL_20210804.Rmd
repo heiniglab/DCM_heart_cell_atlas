@@ -1,0 +1,190 @@
+---
+title: "## Mural cells (MCs) 2021/08/04 - Part C: DEG analysis"
+author: "Jorge Ruiz-Orera"
+date: "2021/08/04"
+output:   
+  html_notebook: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library("gprofiler2")
+library("ReactomePA")
+library("ggplot2")
+library("stringr")
+library(edgeR)
+library(qvalue)
+library(ggrepel)
+library(RColorBrewer)
+library(magrittr)
+library(DESeq2)
+library(dplyr)
+
+genes = read.table("HGNC_entrez.txt", header = T, sep = "\t")
+```
+
+#Parameters
+```{r}
+genotypes = c("LMNA","RBM20","TTN","PKP2","PVneg")
+cell_states = c("PC1","PC2","PC3","SMC1.1","SMC1.2","SMC2")
+CELL_LEVEL = "Mural"
+FDRc = 0.05
+logFCc = 1
+```
+
+
+# Number of DEG genes (Figure 1C)
+```{r}
+library(reshape)
+library(ggplot2)
+library(ggpubr)
+
+plot_deg_numbers <- function(final_df_filt, FDR_cutoff, logFC_cutoff) {
+    unique_genes = data.frame()
+    genes = data.frame()
+    for (f in unique(final_df_filt$comparison)){ 
+      act = final_df_filt[(final_df_filt$comparison == f)&(final_df_filt$FDR <= FDR_cutoff)&((final_df_filt$logFC >= logFC_cutoff)|(final_df_filt$logFC <= -logFC_cutoff)),]
+      exc = final_df_filt[(final_df_filt$comparison != f)&(final_df_filt$FDR <= FDR_cutoff)&((final_df_filt$logFC >= logFC_cutoff)|(final_df_filt$logFC <= -logFC_cutoff)),]
+      actd = act[!act$Gene %in% exc$Gene,]
+      #actd_u = data.frame(actd %>% group_by(Gene) %>% filter(n()==1))
+      unique_genes = rbind(unique_genes,actd[,c("Gene","cell_state","comparison")])
+      genes = rbind(genes,act[,c("Gene","cell_state","comparison")])
+    }
+    
+    unique_genes$comparison = gsub("control_","",unique_genes$comparison)
+    unique_genes$comparison = factor(unique_genes$comparison, levels=rev(c("LMNA", "TTN", "RBM20", "PKP2", "PVneg")), ordered=TRUE)
+    unique_genes$cell_state = factor(unique_genes$cell_state, levels=rev(levels(factor(genes$cell_state))), ordered=TRUE)
+    
+    genes$comparison = gsub("control_","",genes$comparison)
+    genes$comparison = factor(genes$comparison, levels=rev(c("LMNA", "TTN", "RBM20", "PKP2", "PVneg")), ordered=TRUE)
+    genes$cell_state = factor(genes$cell_state, levels=rev(levels(factor(genes$cell_state))), ordered=TRUE)
+    
+    plot1 = ggplot(melt(genes), aes(x = comparison, fill = cell_state)) + geom_bar() + theme_classic(base_size = 12) + coord_flip() + ylab("# DE genes vs controls") + xlab("") + 
+      scale_y_continuous(labels = scales::comma)
+    
+    unique_genes = unique(unique_genes[,c("Gene","comparison")])
+    all_genes = unique(genes[,c("Gene","comparison")])
+    prop = table(unique_genes$comparison) / table(all_genes$comparison)
+    prop = melt(prop)
+    colnames(prop) = c("comparison","perc")
+    prop$comparison = factor(prop$comparison, levels=rev(c("LMNA", "TTN", "RBM20", "PKP2", "PVneg")), ordered=TRUE)
+    
+    plot2 = ggplot(prop, aes(y = perc, x = comparison)) + geom_bar(stat = "identity") + theme_classic(base_size = 12) + coord_flip() + xlab("") + ylab("% genotype-specific DE genes") + 
+      theme(legend.position="bottom") + scale_y_continuous(labels = scales::percent)
+    
+    gga = ggarrange(plot1,plot2, widths = c(7,4))
+    print(gga)
+    ggsave(gga,file = paste0("figures/",REGION,"_DEG_bar.eps"), height = 3, width = 6)
+    return(unique_genes)
+}
+
+REGION = "LV"
+all = read.csv(paste0("ALLCELLSTATES_ALLGENOTYPES_EDGER_",REGION,"_V5.csv"), header = T)
+all_celltype_lv = subset(all,all$cell_type == CELL_LEVEL)
+unique_Genes_lv = plot_deg_numbers(all_celltype_lv,FDRc,1)
+
+REGION = "RV"
+all = read.csv(paste0("ALLCELLSTATES_ALLGENOTYPES_EDGER_",REGION,"_V5.csv"), header = T)
+all_celltype_rv = subset(all,all$cell_type == CELL_LEVEL)
+unique_Genes_rv = plot_deg_numbers(all_celltype_rv,FDRc,1)
+
+```
+
+
+#LV vs RV and number of genes (Figure S1D)
+```{r}
+ovs = data.frame()
+for (f in unique(unique_Genes_lv$comparison)){
+  print(f)
+  list1 = unique(all_celltype_lv[(all_celltype_lv$comparison == paste0("control_",f))&(all_celltype_lv$FDR <= FDRc)&((all_celltype_lv$logFC >= logFCc)|(all_celltype_lv$logFC <= -logFCc)),"Gene"])
+  list2 = unique(all_celltype_rv[(all_celltype_rv$comparison == paste0("control_",f))&(all_celltype_rv$FDR <= FDRc)&((all_celltype_rv$logFC >= logFCc)|(all_celltype_rv$logFC <= -logFCc)),"Gene"])
+  a = length(list1)
+  b = length(list2)
+  ab = length(intersect(list1,list2))
+  ovs = rbind(ovs,data.frame(LV = a, RV = b, both = ab, class = f))
+}
+
+plot = ggplot(melt(ovs), aes(x = class, fill = variable, y = value)) + geom_bar(stat = "identity", position = "dodge") + theme_bw() + scale_fill_discrete(name = "DE genes - LV vs RV")
+#ggsave(plot,file = paste0("figures/DE_numbers_LVvsRV.pdf"), height = 3, width = 3.5)
+plot
+```
+
+
+#Pathways LV (Figure 1D)
+```{r fig.height=5, fig.width=10}
+final_df_filt = all_celltype_lv[(all_celltype_lv$FDR <= FDRc)&((all_celltype_lv$logFC >= logFCc)|(all_celltype_lv$logFC <= -logFCc)),]
+
+reac_gc3 = data.frame()
+for (f in unique(final_df_filt$comparison)){
+  for (f2 in unique(final_df_filt$cell_state)){
+    etdf = final_df_filt[(final_df_filt$comparison == f)&(final_df_filt$cell_state == f2),]
+    tryCatch(
+      expr = {
+        a = head(data.frame(enrichPathway(na.omit(genes[genes$hgnc_symbol %in% etdf$Gene,"entrezgene_id"]), organism = "human", pvalueCutoff = 0.01,
+                                          pAdjustMethod = "BH", qvalueCutoff = 0.2, na.omit(genes[genes$hgnc_symbol %in% etdf[,"Gene"],"entrezgene_id"]), minGSSize = 4,
+                                          maxGSSize = 5000, readable = FALSE)),n=5)
+        a["class"] = f
+        a["class2"] = f2
+        #a["class3"] = "up"
+        reac_gc3 = rbind(reac_gc3,a)
+      },
+      error = function(e){
+        message('Caught an error!')
+        print(e)
+      } 
+    )
+  }
+}
+
+
+reac_gc3["class3"] = paste0(reac_gc3$class2,"/",reac_gc3$class)
+a = ggplot(reac_gc3[grepl("PC",reac_gc3$class3),], aes(x = class3, y = reorder(Description, -log10(qvalue)), fill = -log10(qvalue))) + geom_tile() + scale_fill_gradient(name = "-log10(q-value)", limits=c(0, 15), low = "white", high = "#EA7DDA") + theme(panel.background=element_rect(fill="white", colour="grey"), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),  axis.text.y = element_text(angle = 45, vjust = 0.5, hjust=1)) + xlab("") + ylab("")
+b = ggplot(reac_gc3[grepl("SMC",reac_gc3$class3),], aes(x = class3, y = reorder(Description, -log10(qvalue)), fill = -log10(qvalue))) + geom_tile() + scale_fill_gradient(name = "-log10(q-value)", limits=c(0, 6), low = "white", high = "#EA7DDA") + theme(panel.background=element_rect(fill="white", colour="grey"), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),  axis.text.y = element_text(angle = 45, vjust = 0.5, hjust=1)) + xlab("") + ylab("")
+a
+b
+#ggsave(ggarrange(a,b),file = "figures/lv_pathways.pdf", width = 12, height=4)
+```
+
+
+#Pathways RV
+```{r fig.height=5, fig.width=10}
+final_df_filt = all_celltype_rv[(all_celltype_rv$FDR <= FDRc)&((all_celltype_rv$logFC >= logFCc)|(all_celltype_rv$logFC <= -logFCc)),]
+
+reac_gc3 = data.frame()
+for (f in unique(final_df_filt$comparison)){
+  for (f2 in unique(final_df_filt$cell_state)){
+    etdf = final_df_filt[(final_df_filt$comparison == f)&(final_df_filt$cell_state == f2),]
+    tryCatch(
+      expr = {
+        a = head(data.frame(enrichPathway(na.omit(genes[genes$hgnc_symbol %in% etdf$Gene,"entrezgene_id"]), organism = "human", pvalueCutoff = 0.01,
+                                          pAdjustMethod = "BH", qvalueCutoff = 0.2, na.omit(genes[genes$hgnc_symbol %in% etdf[,"Gene"],"entrezgene_id"]), minGSSize = 4,
+                                          maxGSSize = 5000, readable = FALSE)),n=5)
+        a["class"] = f
+        a["class2"] = f2
+        #a["class3"] = "up"
+        reac_gc3 = rbind(reac_gc3,a)
+      },
+      error = function(e){
+        message('Caught an error!')
+        print(e)
+      } 
+    )
+  }
+}
+
+
+reac_gc3["class3"] = paste0(reac_gc3$class2,"/",reac_gc3$class)
+a = ggplot(reac_gc3[grepl("PC",reac_gc3$class3),], aes(x = class3, y = reorder(Description, -log10(qvalue)), fill = -log10(qvalue))) + geom_tile() + scale_fill_gradient(name = "-log10(q-value)", limits=c(0, 3), low = "white", high = "#EA7DDA") + theme(panel.background=element_rect(fill="white", colour="grey"), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),  axis.text.y = element_text(angle = 45, vjust = 0.5, hjust=1)) + xlab("") + ylab("")
+b = ggplot(reac_gc3[grepl("SMC",reac_gc3$class3),], aes(x = class3, y = reorder(Description, -log10(qvalue)),, fill = -log10(qvalue))) + geom_tile() + scale_fill_gradient(name = "-log10(q-value)", limits=c(0, 5), low = "white", high = "#EA7DDA") + theme(panel.background=element_rect(fill="white", colour="grey"), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),  axis.text.y = element_text(angle = 45, vjust = 0.5, hjust=1)) + xlab("") + ylab("")
+a
+b
+#ggsave(ggarrange(a,b),file = "figures/rv_pathways.pdf", width = 12, height=4)
+```
