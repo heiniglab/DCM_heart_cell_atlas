@@ -80,6 +80,16 @@ include_detailed_celltype_ratios_rv <- FALSE
 include_follow_up <- FALSE
 ```
 
+```{r, include=FALSE}
+## there is also a color scheme for cell states
+cs_colmap <- read.csv("data/current/CELLSTATES_COLOR_SCHEME.csv", stringsAsFactors = FALSE)
+tmp <- gsub(";", "", cs_colmap$colours.)
+names(tmp) <- cs_colmap$cell_states
+cs_colmap <- tmp
+rm(tmp)
+```
+
+
 
 # Explore the cell type proportion data
 
@@ -814,7 +824,12 @@ We look separately for each region: genotype vs the control.
 
 ```{r, warning=FALSE, message=FALSE}
 da.vs.ctrl.rare <- NULL
-clr.df <- NULL
+## clr.df <- NULL
+
+## minimal count per cell type and sample to be included in the analysis
+min_cells_per_ct <- 10
+
+samples_used_for_cs_da <- list()
 
 for (region in unique(prop$Region)) {
   # prop.subset <- prop[prop$Region == region & !prop$cell_states %in% selected.cellstates,]
@@ -829,23 +844,49 @@ for (region in unique(prop$Region)) {
 
   covar <- covariates[match(rownames(ct), covariates$Patient),]
   prop.subset <- merge(prop.subset, covar, by="Patient")
-
-  Z <- clr(acomp(ct))
-  clr.df <- rbind(clr.df, data.frame(Region=region, Patient=rownames(Z), Z))
   
-  for (celltype in colnames(ct)) {
-    for (gene in setdiff(unique(covar$Gene), "control")) {
-      lvls <- c("control", gene)
-      data <- data.frame(abundance=Z[,celltype], proportion=ct[,celltype], covar)[covar$Gene %in% lvls,]
-      data$Gene <- factor(data$Gene, levels=lvls)
-      m <- lm(abundance ~ Gene, data=data)
-      smr <- prop.subset %>% filter(Gene %in% c("control", gene) & cell_states == celltype) %>% group_by(Gene) %>% summarise(mean.prop=mean(proportion), mean.count=mean(count), nind=sum(count > 0))
-      ## add raw proportions and their differences as well
-      m2 <- lm(proportion ~ Gene, data=data)
-      smr2 <- t(coef(summary(m2))[2,])
-      colnames(smr2) <- paste("prop",colnames(smr2), sep="_")
-
-      da.vs.ctrl.rare <- rbind(da.vs.ctrl.rare, data.frame(celltype, gene, region, mean.prop.gene=as.numeric(smr[smr$Gene==gene,"mean.prop"]), mean.prop.ctrl=as.numeric(smr[smr$Gene=="control","mean.prop"]), mean.count.gene=as.numeric(smr[smr$Gene==gene,"mean.count"]), mean.count.ctrl=as.numeric(smr[smr$Gene=="control","mean.count"]), nind.gene=as.numeric(smr[smr$Gene==gene,"nind"]), nind.ctrl=as.numeric(smr[smr$Gene=="control","nind"]), t(coef(summary(m))[2,]), smr2, check.names=FALSE))
+  samples_used_for_cs_da[[region]] <- list()
+  
+  for (celltype in unique(cs2ct$cell_type)) {
+    
+    states <- filter(cs2ct, cell_type == celltype)$cell_states
+    if (length(states) < 2) {
+      next()
+    }
+    ac <- acomp(ct)[,states]
+    Z <- clr(ac)
+    ## clr.df <- rbind(clr.df, data.frame(Region=region, Patient=rownames(Z), Z))
+    
+    prop_within_ct <- as.matrix(ac)
+    prop.subset.ct <- filter(prop.subset, cell_states %in% states)
+    total_ct <- prop.subset.ct %>% group_by(Patient) %>% summarise(total_ct=sum(count))
+    prop.subset.ct <- inner_join(prop.subset.ct, total_ct, by=c("Patient"="Patient")) %>% mutate(proportion=count/total_ct)
+    
+    for (cellstate in states) {
+      samples_for_analysis <- (prop.subset.ct %>% 
+                                 filter(cell_states == cellstate & 
+                                          total_ct > min_cells_per_ct)
+                               )$Patient
+      samples_used_for_cs_da[[region]][[cellstate]] <- samples_for_analysis
+      
+      for (gene in setdiff(unique(covar$Gene), "control")) {
+        
+        lvls <- c("control", gene)
+        data <- data.frame(abundance=Z[,cellstate], proportion=prop_within_ct[,cellstate], covar)[covar$Gene %in% lvls,]
+        data$Gene <- factor(data$Gene, levels=lvls)
+        data <- data %>% filter(Patient %in% samples_for_analysis)
+        if (length(unique(data$Gene)) < 2) {
+          next()
+        }
+        m <- lm(abundance ~ Gene, data=data)
+        smr <- prop.subset.ct %>% filter(Gene %in% c("control", gene) & cell_states == cellstate & Patient %in% samples_for_analysis) %>% group_by(Gene) %>% summarise(mean.prop=mean(proportion), mean.count=mean(count), nind=sum(count > 0))
+        ## add raw proportions and their differences as well
+        m2 <- lm(proportion ~ Gene, data=data)
+        smr2 <- t(coef(summary(m2))[2,])
+        colnames(smr2) <- paste("prop",colnames(smr2), sep="_")
+  
+        da.vs.ctrl.rare <- rbind(da.vs.ctrl.rare, data.frame(celltype, cellstate, gene, region, mean.prop.gene=as.numeric(smr[smr$Gene==gene,"mean.prop"]), mean.prop.ctrl=as.numeric(smr[smr$Gene=="control","mean.prop"]), mean.count.gene=as.numeric(smr[smr$Gene==gene,"mean.count"]), mean.count.ctrl=as.numeric(smr[smr$Gene=="control","mean.count"]), nind.gene=as.numeric(smr[smr$Gene==gene,"nind"]), nind.ctrl=as.numeric(smr[smr$Gene=="control","nind"]), t(coef(summary(m))[2,]), smr2, check.names=FALSE))
+      }
     }
   }
 }
@@ -854,10 +895,7 @@ da.vs.ctrl.rare <- data.frame(da.vs.ctrl.rare, FDR=p.adjust(da.vs.ctrl.rare$`Pr(
 ## fill NA with zeros
 da.vs.ctrl.rare[is.na(da.vs.ctrl.rare)] <- 0
 
-## annotate with coarse celltype
-da.vs.ctrl.rare <- inner_join(da.vs.ctrl.rare, dplyr::rename(cs2ct, celltype_coarse=cell_type), by=c("celltype"="cell_states"))
-
-write_tsv(clr.df, "results/current/cellstates_CLR.txt")
+## write_tsv(clr.df, "results/current/cellstates_CLR.txt")
 write_tsv(da.vs.ctrl.rare, "results/current/cellstates_DA_gt_vs_ctrl.txt")
 
 ```
@@ -869,21 +907,23 @@ Visualize the differential abundance of cell states per cell type
 # plist <- list(LV=list(), RV=list())
 plist <- list()
 
-for (coarse in unique(da.vs.ctrl.rare$celltype_coarse)) {
+for (coarse in unique(da.vs.ctrl.rare$celltype)) {
   for (reg in c("LV", "RV")) {
-    y <- filter(da.vs.ctrl.rare, region == reg & celltype_coarse == coarse)
+    y <- filter(da.vs.ctrl.rare, region == reg & celltype == coarse)
     y$gene <- factor(y$gene, levels=rev(order_of_genotypes))
+    y$cellstate <- factor(y$cellstate, levels=sort(filter(cs2ct, cell_type == coarse)$cell_states))
     
     ## plot a heatmap of differential effects
-    p1 <- ggplot(aes(x=celltype, y=gene, fill=prop_Estimate/mean.prop.ctrl), data=y) + geom_tile() + our_fill_scale_gradient2 + flipx45 + labs(y="Gene", x="Cellstate", fill="Proportion change\nrelative to control") + theme(legend.position = "bottom")
+    p1 <- ggplot(aes(x=cellstate, y=gene, fill=prop_Estimate/mean.prop.ctrl), data=y) + geom_tile() + our_fill_scale_gradient2 + flipx45 + labs(y="Gene", x="Cellstate", fill="Proportion change\nrelative to control") + theme(legend.position = "bottom") + scale_x_discrete(drop=FALSE)
     sig <- y$FDR < 0.05 & (y$mean.count.ctrl > 5 | y$mean.count.gene > 5)
     if (any(sig)) {
-      p1 <- p1 + geom_text(aes(x=celltype, y=gene, label=gsub("e-0", "e-", formatC(Pr...t.., format="e", digits=1))), data=y[sig,])
+      p1 <- p1 + geom_text(aes(x=cellstate, y=gene, label=gsub("e-0", "e-", formatC(Pr...t.., format="e", digits=1))), data=y[sig,])
     }
     
     ## on top we would like a barplot for the controls
-    p2 <- ggplot(aes(x=celltype, y=mean.prop.ctrl * 100), data=filter(y, gene == "TTN")) + geom_bar(stat="identity") + # scale_fill_manual(values=ct_colmap) +
-      geom_text(aes(y=mean.prop.ctrl * 100 + max(mean.prop.ctrl) * 10, label=signif(mean.prop.ctrl * 100, 2))) + labs(title=paste("Abundance of", coarse, "cellstates in", reg), y="Mean % in controls")  + no.xaxis + theme(legend.position = "none")
+    prop_ctrl <- y %>% select(cellstate, mean.prop.ctrl) %>% group_by(cellstate) %>% slice_head(n=1)
+    p2 <- ggplot(aes(x=cellstate, y=mean.prop.ctrl * 100, fill=cellstate), data=prop_ctrl) + geom_bar(stat="identity") + scale_fill_manual(values=cs_colmap, drop=FALSE) +
+      geom_text(aes(y=mean.prop.ctrl * 100 + max(mean.prop.ctrl) * 10, label=signif(mean.prop.ctrl * 100, 2))) + labs(title=paste("Abundance of", coarse, "cellstates in", reg), y="Mean % in controls")  + no.xaxis + theme(legend.position = "none") + scale_x_discrete(drop=FALSE)
 
     p <- ggarrange(p2, p1, ncol=1, nrow=2, align="v", heights = c(4, 5)) # legend="bottom", 
     ## plist[[reg]] <- c(plist[[reg]], list(p))
@@ -2109,11 +2149,19 @@ ratio_plots_cellstates_lv_data <- list()
     selected1$logFC <- -selected1$logFC 
     selected <- rbind(selected1, selected2)
   
+    ## to be consistent with the other plots where we have celltype1 on the
+    ## x axis we need to swap everything
+    tmp <- selected$celltype2
+    selected$celltype2 <- selected$celltype1
+    selected$celltype1 <- tmp
+    selected$t <- -selected$t
+    selected$logFC <- -selected$logFC 
+    
     selected$gene <- factor(selected$gene, levels=order_of_genotypes)
     
     #selected <- selected[which(selected$gene == gene),]
     if (nrow(selected) > 0) {
-      plt <- ggplot(data=selected) + geom_tile(aes(x=celltype2, y=celltype1, fill=logFC/log(2))) + our_fill_scale_gradient2 + geom_point(aes(x=celltype2, y=celltype1, color=FDR < 0.05), data=selected[which(selected$FDR < 0.05),]) + labs(title=paste0("Change of ratios of cell type abundance mutation vs control"), subtitle=paste("Cell states of", coarse, "vs the rest in LV"), fill="log2FC") + flipx + facet_grid(.~gene) 
+      plt <- ggplot(data=selected) + geom_tile(aes(x=celltype1, y=celltype2, fill=logFC/log(2))) + our_fill_scale_gradient2 + geom_point(aes(x=celltype1, y=celltype2, color=FDR < 0.05), data=selected[which(selected$FDR < 0.05),]) + labs(title=paste0("Change of ratios of cell type abundance mutation vs control"), subtitle=paste("Cell states of", coarse, "vs the rest in LV"), fill="log2FC") + flipx + facet_grid(.~gene) 
       print(plt)
       plist <- c(plist, list(plt))
       ratio_plots_cellstates_lv_data <- c(ratio_plots_cellstates_lv_data, list(selected))
@@ -2257,11 +2305,19 @@ ratio_plots_cellstates_rv_data <- list()
     selected1$logFC <- -selected1$logFC 
     selected <- rbind(selected1, selected2)
   
+    ## to be consistent with the other plots where we have celltype1 on the
+    ## x axis we need to swap everything
+    tmp <- selected$celltype2
+    selected$celltype2 <- selected$celltype1
+    selected$celltype1 <- tmp
+    selected$t <- -selected$t
+    selected$logFC <- -selected$logFC 
+    
     selected$gene <- factor(selected$gene, levels=order_of_genotypes)
     
     #selected <- selected[which(selected$gene == gene),]
     if (nrow(selected) > 0) {
-      plt <- ggplot(data=selected) + geom_tile(aes(x=celltype2, y=celltype1, fill=logFC/log(2))) + our_fill_scale_gradient2 + geom_point(aes(x=celltype2, y=celltype1, color=FDR < 0.05), data=selected[which(selected$FDR < 0.05),]) + labs(title=paste0("Change of ratios of cell type abundance mutation vs control"), subtitle=paste("Cell states of", coarse, "vs the rest in LV"), fill="log2FC") + flipx + facet_grid(.~gene) 
+      plt <- ggplot(data=selected) + geom_tile(aes(x=celltype1, y=celltype2, fill=logFC/log(2))) + our_fill_scale_gradient2 + geom_point(aes(x=celltype1, y=celltype2, color=FDR < 0.05), data=selected[which(selected$FDR < 0.05),]) + labs(title=paste0("Change of ratios of cell type abundance mutation vs control"), subtitle=paste("Cell states of", coarse, "vs the rest in LV"), fill="log2FC") + flipx + facet_grid(.~gene) 
       print(plt)
       plist <- c(plist, list(plt))
       ratio_plots_cellstates_rv_data <- c(ratio_plots_cellstates_rv_data, list(selected))
