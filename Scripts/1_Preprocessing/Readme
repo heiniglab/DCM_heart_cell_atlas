@@ -1,2 +1,5 @@
 Here are the settings for preprocessing/alignment. For the alignment, **cellranger 3.0.0, Ens93 and GRCh38** have been used. The cellranger reference file was generated using the instructions on the 10X Genomics website: 
 https://support.10xgenomics.com/single-cell-gene-expression/software/pipelines/latest/advanced/references
+
+Genome: http://ftp.ensembl.org/pub/release-84/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
+Gtf: http://ftp.ensembl.org/pub/release-84/gtf/homo_sapiens/Homo_sapiens.GRCh38.84.gtf.gz
