@@ -1,2 +1,2 @@
-Here are the settings for preprocessing/alignment. For the alignment, **cellranger 3.0.0, Ens93 and GRCh38** have been used. 2 runs surpassed 300.000 reads 
-per nucleus and have been downsampled to 100.000 reads/nucleus (molecule_info.h5 file). Please check Sample_Table.txt for further information. 
+Here are the settings for preprocessing/alignment. For the alignment, **cellranger 3.0.0, Ens93 and GRCh38** have been used. The cellranger reference file was generated using the instructions on the 10X Genomics website: 
+https://support.10xgenomics.com/single-cell-gene-expression/software/pipelines/latest/advanced/references
