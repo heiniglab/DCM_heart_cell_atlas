@@ -1,4 +1,5 @@
 Here we collect scripts on how the global clustering was performed. The steps are:
-1) Concatenate all samples and create a raw global object
-2) Run doublet score calculations using scrublet and solo
-3) Add metadata 
+- Concatenate all samples and create a raw global object (Global_Step1)
+- Run doublet score calculations using scrublet (Global_Step2) and solo (Run_solo.sh)
+- Add metadata 
+- Annotate cell-types for subclustering
