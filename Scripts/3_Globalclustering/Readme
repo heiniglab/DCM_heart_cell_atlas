@@ -1,1 +1,4 @@
-Here we collect scripts on how the global clustering was performed. Subclustering annotations are collected in 4_Subclustering
+Here we collect scripts on how the global clustering was performed. The steps are:
+1) Concatenate all samples and create a raw global object
+2) Run doublet score calculations using scrublet and solo
+3) Add metadata 
