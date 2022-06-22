@@ -7,6 +7,7 @@ args = {
     'device': 'cuda',
     'input_dime':3000,
     'num_classes':5,
+    's_max':41,
     'Patient':'Patient',
     'training_size':0.8,
     'lf':'nll',
