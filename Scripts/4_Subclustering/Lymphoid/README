@@ -1,1 +1,1 @@
-Before release: Delete edgeR files - retundant from central edgeR analysis
+Step No4 is the generation of the edgeR differential gene expression table, which was centrally computed. 
