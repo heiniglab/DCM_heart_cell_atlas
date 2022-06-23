@@ -1,5 +1,3 @@
-Here we collect scripts on how the global clustering was performed. The steps are:
-- Concatenate all samples and create a raw global object (Global_Step1)
-- Run doublet score calculations using scrublet (Global_Step2) and solo (Run_solo.sh)
-- Add metadata 
-- Annotate cell-types for subclustering
+Here is the script with parameters for the global clustering, i.e. annotation of cell-types. 
+
+To annotate "unassigned" cell-types, we transfered the information from subclustering into the global object. 
