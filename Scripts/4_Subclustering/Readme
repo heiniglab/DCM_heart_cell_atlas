@@ -1,1 +1,4 @@
 Here all subclustering scripts are collected. 
+
+The script prepare_forcellxgene shows for some examples what the h5ad contains which was deposited on the CZI website (link in paper). Raw UMI counts are stored in the
+.raw.X container. 
