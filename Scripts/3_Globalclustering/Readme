@@ -1,3 +1,4 @@
-Here is the script with parameters for the global clustering, i.e. annotation of cell-types. 
+Here is the script with parameters for the global clustering, i.e. annotation of cell-types. In this script we only plot a selection of marker genes per cell-type. 
+We refer to the manuscript, Supplementary Figure 3B for more marker genes. 
 
 To annotate "unassigned" cell-types, we transfered the information from subclustering into the global object. 
