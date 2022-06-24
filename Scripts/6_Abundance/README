@@ -1,1 +1,2 @@
-Here we collect all scripts used for abundance analysis.
+Here we collect all scripts used for compositional analysis. This script contains the code on how cell-type and -state proportions are compared
+in the different cardiac regions, replicates and genotypes. 
