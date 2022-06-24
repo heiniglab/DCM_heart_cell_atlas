@@ -1,4 +1,7 @@
-Here all subclustering scripts are collected. 
+Here all subclustering scripts are collected. Subclustering includes: Cardiomyocytes (CM), Fibroblasts (FB), Endothelial cells (EC), Mural cells (Pericytes+Smooth Muscle cells), 
+Myeloids, Lymphoids, Neuronal cells and Adipocytes. 
+
+Tables with genes used for gene set enrichment/gene set scoring are located in another directory. 
 
 The script prepare_forcellxgene shows for some examples what the h5ad contains which was deposited on the CZI website (link in paper). Raw UMI counts are stored in the
 .raw.X container. 
