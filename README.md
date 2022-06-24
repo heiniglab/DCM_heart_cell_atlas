@@ -4,7 +4,7 @@ Github repo from the manuscript "Pathogenic variants damage cell compositions an
 
 All scripts from the paper are collected in "Scripts". 
 
-Data are available via: <br>
-FASTQs:
+Data are available via: 
+Raw data: 
 Count matrices:
-Processed data:
+Processed data/Cellxgene: 
