@@ -1,2 +1,15 @@
 This scripts summarize how we used edgeR to compute differentially expressed genes. 
 
+Explanation of columns:
+- logFC	logCPM	F	PValue	FDR: This is returned by edgeR 
+- low_expression: this genes per cell-state/type show low mean expression in both pathogenic variant and control
+- FDR_plot: -log10(FDR)
+- mean_exp_control: Mean expression in control group
+- mean_exp_genotype: Mean expression in pathogenic variant group
+- Region: Which region was tested
+- annotation_level: Comparison of cell-type or state
+- cell_state/_type: Which cell-state/-type was tested
+- comparison: Which genotype was compared to control
+- Observations_genotype: How many samples of one pathogenic variant group fullfill minimum requirements (e.g. minimum cell-state count)
+- Observations_reference: How many samples of the control group fullfill minimum requirements (e.g. minimum cell-state count)
+
