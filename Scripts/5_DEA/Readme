@@ -1,5 +1,2 @@
-The results can be found in /Eval/edgeR_DEGs on the FTP. (e.g. ALLCELLTYPE_ALLGENOTYPES_EDGER.._V4.csv). 
+This scripts summarize how we used edgeR to compute differentially expressed genes. 
 
-# Last update: V4, 26.04.2021
-# Last update: V3, 19.04.2021
-# Update: 15.04.2021
