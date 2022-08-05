@@ -9,7 +9,7 @@ Link to publication: https://www.science.org/doi/10.1126/science.abo1984
 Data are available via: 
 Raw data/bams: 
 
-Count matrices:
+Raw count matrices (and cell-containing barcodes):
 https://zenodo.org/record/6962685#.YuyuihxBzKE
 
 Processed data/Cellxgene: 
