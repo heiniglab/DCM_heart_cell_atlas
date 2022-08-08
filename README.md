@@ -7,7 +7,7 @@ All scripts from the paper are collected in "Scripts".
 Link to publication: https://www.science.org/doi/10.1126/science.abo1984
 
 Data are available via: 
-Raw data/bams: 
+Raw data/bams: https://ega-archive.org/studies/EGAS00001006374
 
 Raw count matrices (and cell-containing barcodes):
 https://zenodo.org/record/6962685#.YuyuihxBzKE
