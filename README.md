@@ -9,7 +9,8 @@ Link to publication: https://www.science.org/doi/10.1126/science.abo1984
 Data are available via: 
 Raw data/bams: https://ega-archive.org/studies/EGAS00001006374
 
-Raw count matrices (and cell-containing barcodes):
+Raw count matrices (and cell-containing barcodes) + 
+Objects with cell type and state annotation of all barcodes with RAW UMI counts as h5ad and h5seurat (global_all_ANNOTATED_CELLSTATES_RAW_V8):
 https://zenodo.org/record/6962685#.YuyuihxBzKE
 
 Processed data/Cellxgene: 
