@@ -10,7 +10,7 @@ Data are available via:
 Raw data/bams: https://ega-archive.org/studies/EGAS00001006374
 
 Raw count matrices (and cell-containing barcodes) + 
-Objects with cell type and state annotation of all barcodes with RAW UMI counts as h5ad and h5seurat (global_all_ANNOTATED_CELLSTATES_RAW_V8):
+Objects with cell type and state annotation of all barcodes with RAW UMI counts as h5ad (global_all_ANNOTATED_CELLSTATES_RAW_V8):
 https://zenodo.org/record/6962685#.Y5sKYH3MIe4
 
 Processed data/Cellxgene: 
